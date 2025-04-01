@@ -1,6 +1,7 @@
 import can
 import logging
 from typing import Optional, Callable
+import time
 
 class FeederCabinetCAN:
     def __init__(self, interface: str = 'can1', bitrate: int = 1000000):
@@ -19,6 +20,12 @@ class FeederCabinetCAN:
         # CAN消息ID定义
         self.SEND_ID = 0x10A  # 打印机 -> 送料柜
         self.RECEIVE_ID = 0x10B  # 送料柜 -> 打印机
+        self.HANDSHAKE_SEND_ID = 0x3F0  # 握手发送ID
+        self.HANDSHAKE_RECEIVE_ID = 0x3F1  # 握手接收ID
+        
+        # 握手消息定义
+        self.HANDSHAKE_DATA = [0x01, 0xF0, 0x10, 0x00, 0x00, 0x06, 0x01, 0x05]
+        self.HANDSHAKE_RESPONSE = [0x05]  # 修改为正确的响应值
         
         # 命令类型定义
         self.CMD_REQUEST_FEED = 0x01
@@ -51,10 +58,10 @@ class FeederCabinetCAN:
         
     def connect(self) -> bool:
         """
-        连接到CAN总线
+        连接到CAN总线并执行握手过程
         
         Returns:
-            bool: 连接是否成功
+            bool: 连接和握手是否成功
         """
         try:
             self.bus = can.interface.Bus(
@@ -63,9 +70,55 @@ class FeederCabinetCAN:
                 bitrate=self.bitrate
             )
             self.logger.info(f"成功连接到CAN总线 {self.interface}")
+            
+            # 执行握手过程
+            if not self._perform_handshake():
+                self.logger.error("握手过程失败")
+                self.disconnect()
+                return False
+                
             return True
         except Exception as e:
             self.logger.error(f"连接CAN总线失败: {str(e)}")
+            return False
+            
+    def _perform_handshake(self) -> bool:
+        """
+        执行握手过程
+        
+        Returns:
+            bool: 握手是否成功
+        """
+        try:
+            # 发送握手消息
+            handshake_msg = can.Message(
+                arbitration_id=self.HANDSHAKE_SEND_ID,
+                data=self.HANDSHAKE_DATA,
+                is_extended_id=False
+            )
+            self.bus.send(handshake_msg)
+            self.logger.info(f"已发送握手消息: ID=0x{self.HANDSHAKE_SEND_ID:03X}, 数据={[hex(x) for x in self.HANDSHAKE_DATA]}")
+            
+            # 等待握手响应
+            start_time = time.time()
+            while time.time() - start_time < 5:  # 等待5秒
+                msg = self.bus.recv(timeout=0.1)
+                if msg and msg.arbitration_id == self.HANDSHAKE_RECEIVE_ID:
+                    self.logger.debug(f"收到握手响应: ID=0x{msg.arbitration_id:03X}, 数据={[hex(x) for x in msg.data]}")
+                    # 将bytearray转换为列表进行比较
+                    response_data = list(msg.data)
+                    if response_data == self.HANDSHAKE_RESPONSE:
+                        self.logger.info("收到正确的握手响应")
+                        return True
+                    else:
+                        self.logger.error(f"收到错误的握手响应: {response_data}, 期望: {self.HANDSHAKE_RESPONSE}")
+                        return False
+                        
+            self.logger.error("握手超时")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"握手过程发生错误: {str(e)}")
             return False
             
     def disconnect(self):
