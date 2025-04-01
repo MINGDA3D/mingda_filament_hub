@@ -27,7 +27,8 @@ class KlipperMonitor:
             "complete": self.can_comm.CMD_PRINT_COMPLETE,
             "paused": self.can_comm.CMD_PRINT_PAUSE,
             "cancelled": self.can_comm.CMD_PRINT_CANCEL,
-            "standby": self.can_comm.CMD_PRINTER_IDLE
+            "standby": self.can_comm.CMD_PRINTER_IDLE,
+            "error": self.can_comm.CMD_PRINTER_ERROR  # 新增：错误状态映射
         }
         
     def _get_moonraker_url(self) -> str:
@@ -189,6 +190,7 @@ class KlipperMonitor:
         server_info = self._send_request("server/info")
         if not server_info:
             self.logger.error("获取服务器信息失败")
+            self.can_comm.send_printer_error(self.can_comm.ERROR_MOONRAKER)
             return {}
             
         self.logger.info(f"服务器信息: {json.dumps(server_info, indent=2)}")
@@ -197,6 +199,7 @@ class KlipperMonitor:
         server_result = server_info.get("result", {})
         if server_result.get("klippy_state") == "error":
             self.logger.error("Klipper 处于错误状态")
+            self.can_comm.send_printer_error(self.can_comm.ERROR_KLIPPER)
             return {
                 "server_info": server_result,
                 "printer_status": {
@@ -221,6 +224,7 @@ class KlipperMonitor:
         
         if not printer_status or "result" not in printer_status:
             self.logger.error("获取打印机状态失败")
+            self.can_comm.send_printer_error(self.can_comm.ERROR_COMMUNICATION)
             return {
                 "server_info": server_result,
                 "printer_status": {

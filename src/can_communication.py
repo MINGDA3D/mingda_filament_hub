@@ -29,6 +29,7 @@ class FeederCabinetCAN:
         self.CMD_PRINT_PAUSE = 0x06
         self.CMD_PRINT_CANCEL = 0x07
         self.CMD_PRINTER_IDLE = 0x08
+        self.CMD_PRINTER_ERROR = 0x09  # 新增：打印机错误状态命令
         
         # 状态码定义
         self.STATUS_IDLE = 0x00
@@ -42,6 +43,9 @@ class FeederCabinetCAN:
         self.ERROR_MECHANICAL = 0x01
         self.ERROR_MATERIAL_MISSING = 0x02
         self.ERROR_OTHER = 0x03
+        self.ERROR_KLIPPER = 0x04  # 新增：Klipper错误
+        self.ERROR_MOONRAKER = 0x05  # 新增：Moonraker错误
+        self.ERROR_COMMUNICATION = 0x06  # 新增：通信错误
         
         self._status_callback = None
         
@@ -176,4 +180,17 @@ class FeederCabinetCAN:
                 'error_code': error_code
             })
             
-        self.logger.debug(f"收到消息: 状态={status}, 进度={progress}, 错误码={error_code}") 
+        self.logger.debug(f"收到消息: 状态={status}, 进度={progress}, 错误码={error_code}")
+        
+    def send_printer_error(self, error_code: int = 0x04, extruder: int = 0) -> bool:
+        """
+        发送打印机错误状态
+        
+        Args:
+            error_code: 错误码
+            extruder: 挤出头编号
+            
+        Returns:
+            bool: 发送是否成功
+        """
+        return self.send_message(self.CMD_PRINTER_ERROR, extruder) 
