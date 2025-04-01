@@ -1,0 +1,57 @@
+# 送料柜自动续料系统配置文件
+
+# CAN通信配置
+can:
+  # CAN接口名称，通常为can0或can1，取决于硬件配置
+  interface: can0
+  
+  # CAN总线波特率，需与送料柜控制器一致，单位：bps
+  bitrate: 1000000
+
+# Klipper/Moonraker连接配置
+klipper:
+  # Moonraker API URL，如果Moonraker运行在不同主机，请修改
+  moonraker_url: http://localhost:7125
+  
+  # 状态更新间隔（秒），影响状态检测的响应速度
+  # 值越小响应越快，但会增加系统负载
+  update_interval: 5.0
+
+# 断料检测配置
+filament_runout:
+  # 是否启用断料检测
+  enabled: true
+  
+  # 传感器引脚，可选，留空则使用Klipper内置检测
+  # 示例: "gpiochip0/gpio16"
+  sensor_pin: null
+
+# 日志配置
+logging:
+  # 日志级别: DEBUG, INFO, WARNING, ERROR
+  level: INFO
+  
+  # 日志文件目录
+  log_dir: /var/log/feeder_cabinet
+  
+  # 是否输出到控制台（开发调试用）
+  console_output: true
+
+# 安全配置
+safety:
+  # 送料请求超时时间（秒），超过此时间仍未收到响应则报错
+  request_timeout: 60.0
+  
+  # 是否在检测到错误时自动尝试恢复
+  auto_recovery: true
+  
+  # 恢复重试次数
+  recovery_attempts: 3
+  
+  # 重试间隔（秒）
+  recovery_interval: 10.0
+
+# 系统配置
+system:
+  # 守护进程模式，设置为true则在后台运行
+  daemon: false 

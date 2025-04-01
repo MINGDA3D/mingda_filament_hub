@@ -1,0 +1,15 @@
+[Unit]
+Description=送料柜自动续料系统
+After=network.target
+After=klipper.service
+After=moonraker.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /opt/feeder_cabinet/src/feeder_cabinet/main.py -c /etc/feeder_cabinet/config.yaml
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target 
