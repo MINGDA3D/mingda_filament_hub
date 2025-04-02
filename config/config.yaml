@@ -3,7 +3,7 @@
 # CAN通信配置
 can:
   # CAN接口名称，通常为can0或can1，取决于硬件配置
-  interface: can0
+  interface: can1
   
   # CAN总线波特率，需与送料柜控制器一致，单位：bps
   bitrate: 1000000
@@ -11,7 +11,7 @@ can:
 # Klipper/Moonraker连接配置
 klipper:
   # Moonraker API URL，如果Moonraker运行在不同主机，请修改
-  moonraker_url: http://localhost:7125
+  moonraker_url: http://192.168.86.200:7125
   
   # 状态更新间隔（秒），影响状态检测的响应速度
   # 值越小响应越快，但会增加系统负载

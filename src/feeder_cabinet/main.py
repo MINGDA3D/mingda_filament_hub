@@ -23,13 +23,13 @@ from .can_communication import FeederCabinetCAN
 from .klipper_monitor import KlipperMonitor
 
 # 配置默认参数
-DEFAULT_CONFIG_PATH = "/etc/feeder_cabinet/config.yaml"
-DEFAULT_CAN_INTERFACE = "can0"
+DEFAULT_CONFIG_PATH = "/home/mingda/feeder_cabinet_help/config/config.yaml"
+DEFAULT_CAN_INTERFACE = "can1"
 DEFAULT_CAN_BITRATE = 1000000
-DEFAULT_MOONRAKER_URL = "http://localhost:7125"
+DEFAULT_MOONRAKER_URL = "http://192.168.86.200:7125"
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_UPDATE_INTERVAL = 5.0
-DEFAULT_LOG_DIR = "/var/log/feeder_cabinet"
+DEFAULT_LOG_DIR = "/home/mingda/printer_data/logs"
 
 class FeederCabinetApp:
     """自动续料系统应用程序类"""
