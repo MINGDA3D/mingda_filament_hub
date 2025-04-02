@@ -226,12 +226,19 @@ class FeederCabinetApp:
                 self.klipper_monitor.enable_filament_runout_detection(
                     sensor_pin=filament_config.get('sensor_pin')
                 )
+                
+                # 配置自动重连
+                self.klipper_monitor.enable_auto_reconnect(
+                    enable=True,
+                    max_attempts=10,
+                    interval=5
+                )
             
             return True
         except Exception as e:
             self.logger.error(f"初始化应用程序时发生错误: {str(e)}")
             return False
-    
+            
     def start(self) -> bool:
         """
         启动应用程序
@@ -274,6 +281,7 @@ class FeederCabinetApp:
         try:
             if self.klipper_monitor:
                 self.klipper_monitor.stop_monitoring()
+                self.klipper_monitor.disconnect()
                 
             if self.can_comm:
                 self.can_comm.disconnect()

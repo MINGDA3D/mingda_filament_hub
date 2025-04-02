@@ -439,40 +439,174 @@ class KlipperMonitor:
     def _check_filament_status(self):
         """检查断料状态"""
         try:
-            # 这里可以添加与Klipper传感器通信的代码
-            # 目前简化为通过打印状态判断
-            if self.printer_state == "paused" and not self.feed_requested:
-                self.logger.info("检测到打印暂停，可能是因为断料")
+            # 如果打印机处于打印状态，检查是否断料
+            if self.printer_state == "printing":
+                # 检查是否有断料传感器信号
+                has_runout = self._check_runout_sensor()
+                
+                if has_runout and not self.feed_requested:
+                    self.logger.info("检测到断料，准备暂停打印并补料")
+                    self._handle_filament_runout()
+            
+            # 如果打印机处于暂停状态，可能是由于断料引起的
+            elif self.printer_state == "paused" and not self.feed_requested:
+                self.logger.info("检测到打印已暂停，可能是因为断料")
                 self._handle_filament_runout()
+                
         except Exception as e:
             self.logger.error(f"检查断料状态时发生错误: {str(e)}")
     
+    def _check_runout_sensor(self) -> bool:
+        """
+        检查断料传感器状态
+        
+        Returns:
+            bool: 是否断料
+        """
+        # 如果有配置传感器引脚，通过GCODE获取传感器状态
+        if self.filament_sensor_pin:
+            try:
+                # 发送查询传感器状态的GCODE
+                query_cmd = f"QUERY_FILAMENT_SENSOR SENSOR=filament_sensor"
+                self._send_gcode(query_cmd)
+                
+                # 注意：这里依赖于Klipper的响应会在WebSocket回调中处理
+                # 实际实现可能需要添加更复杂的状态跟踪
+                
+                # 简化实现:直接检查打印机状态中是否有断料指示
+                return self.print_stats.get("filament_detected", True) == False
+            except Exception as e:
+                self.logger.error(f"查询断料传感器状态失败: {str(e)}")
+                return False
+        else:
+            # 如果没有配置传感器引脚，检查打印机状态中是否有断料指示
+            return self.print_stats.get("filament_detected", True) == False
+    
     def _handle_filament_runout(self):
         """处理断料事件"""
-        self.logger.info("处理断料事件")
+        self.logger.info("处理断料事件开始")
         
-        # 发送补料请求
+        # 步骤1: 暂停打印（如果还没暂停）
+        if self.printer_state == "printing":
+            self.logger.info("暂停打印")
+            self.pause_print()
+            # 等待打印机进入暂停状态
+            timeout = 10  # 设置超时，防止无限等待
+            start_time = time.time()
+            while self.printer_state != "paused" and time.time() - start_time < timeout:
+                time.sleep(0.5)
+        
+        # 步骤2: 保存打印状态（Klipper会自动处理）
+        self.logger.info("打印状态已保存")
+        
+        # 步骤3: 发送补料请求到送料柜
+        self.logger.info("发送补料请求到送料柜")
         if self.can_comm.request_feed():
             self.feed_requested = True
+            self.feed_resume_pending = True
             self.logger.info("已发送补料请求")
         else:
             self.logger.error("发送补料请求失败")
+            # 尝试重新发送补料请求
+            retry_count = 3
+            for i in range(retry_count):
+                self.logger.info(f"尝试重新发送补料请求 ({i+1}/{retry_count})")
+                time.sleep(1)
+                if self.can_comm.request_feed():
+                    self.feed_requested = True
+                    self.feed_resume_pending = True
+                    self.logger.info("重新发送补料请求成功")
+                    break
+            
+            if not self.feed_requested:
+                self.logger.error(f"经过{retry_count}次尝试后，仍无法发送补料请求")
+                # 此处可添加通知用户的代码
     
     def _check_resume_conditions(self):
         """检查是否可以恢复打印"""
-        # 这里可以添加传感器检测，确认是否有新耗材
-        # 简化实现为检查送料柜状态
-        status = self.can_comm.get_last_status()
-        if status and status.get('status') == self.can_comm.STATUS_COMPLETE:
-            self.logger.info("检测到送料完成，准备恢复打印")
-            self.resume_print()
+        if not self.feed_resume_pending:
+            return
+            
+        try:
+            # 获取送料柜最新状态
+            status = self.can_comm.get_last_status()
+            
+            if not status:
+                return
+                
+            # 检查送料柜状态
+            status_code = status.get('status')
+            error_code = status.get('error_code')
+            
+            if status_code == self.can_comm.STATUS_COMPLETE:
+                # 送料完成，准备恢复打印
+                self.logger.info("检测到送料完成，准备恢复打印")
+                
+                # 检查是否有新耗材（简化实现，实际可能需要更复杂的传感器检测）
+                if self._check_new_filament_loaded():
+                    self.logger.info("检测到新耗材已装载，恢复打印")
+                    self.resume_print()
+                else:
+                    self.logger.warning("送料完成但未检测到新耗材，等待")
+                    
+            elif status_code == self.can_comm.STATUS_ERROR:
+                # 送料出错
+                error_msg = self._get_error_message(error_code)
+                self.logger.error(f"送料过程出错: {error_msg}")
+                # 此处可添加通知用户的代码
+                
+            elif status_code == self.can_comm.STATUS_FEEDING:
+                # 送料中，等待
+                progress = status.get('progress', 0)
+                self.logger.debug(f"送料进行中，进度: {progress}%")
+                
+        except Exception as e:
+            self.logger.error(f"检查恢复条件时发生错误: {str(e)}")
     
-    def pause_print(self):
-        """暂停打印"""
-        result = self._send_gcode(self.pause_cmd)
-        if result:
-            self.logger.info("打印已暂停")
-        return result
+    def _check_new_filament_loaded(self) -> bool:
+        """
+        检查新耗材是否已经装载
+        
+        Returns:
+            bool: 新耗材是否已装载
+        """
+        # 如果有配置传感器引脚，通过GCODE获取传感器状态
+        if self.filament_sensor_pin:
+            try:
+                # 发送查询传感器状态的GCODE
+                query_cmd = f"QUERY_FILAMENT_SENSOR SENSOR=filament_sensor"
+                self._send_gcode(query_cmd)
+                
+                # 简化实现:检查打印机状态中是否有耗材检测
+                return self.print_stats.get("filament_detected", False) == True
+            except Exception as e:
+                self.logger.error(f"查询耗材传感器状态失败: {str(e)}")
+                return False
+        else:
+            # 如果没有配置传感器引脚，假设送料柜完成后耗材已装载
+            return True
+    
+    def _get_error_message(self, error_code: int) -> str:
+        """
+        根据错误码获取错误消息
+        
+        Args:
+            error_code: 错误码
+            
+        Returns:
+            str: 错误消息
+        """
+        error_messages = {
+            self.can_comm.ERROR_NONE: "无错误",
+            self.can_comm.ERROR_MECHANICAL: "机械错误",
+            self.can_comm.ERROR_MATERIAL_MISSING: "材料缺失",
+            self.can_comm.ERROR_OTHER: "其他错误",
+            self.can_comm.ERROR_KLIPPER: "Klipper错误",
+            self.can_comm.ERROR_MOONRAKER: "Moonraker错误",
+            self.can_comm.ERROR_COMMUNICATION: "通信错误"
+        }
+        
+        return error_messages.get(error_code, f"未知错误 ({error_code})")
     
     def resume_print(self):
         """恢复打印"""
@@ -480,9 +614,39 @@ class KlipperMonitor:
             self.feed_requested = False
             self.feed_resume_pending = False
             
+        # 恢复前准备工作
+        self._prepare_for_resume()
+            
         result = self._send_gcode(self.resume_cmd)
         if result:
             self.logger.info("打印已恢复")
+        return result
+    
+    def _prepare_for_resume(self):
+        """
+        恢复打印前的准备工作
+        """
+        try:
+            # 如果需要，可以在此处添加恢复前的预热、挤出等操作
+            
+            # 示例：确保热端达到打印温度
+            if self.extruder_info.get('temperature', 0) < self.extruder_info.get('target', 0) - 5:
+                self.logger.info("等待热端达到目标温度")
+                # 实际项目中可以添加等待逻辑或通知用户手动确认
+            
+            # 示例：操作完成后进行少量挤出，确保耗材正常
+            self._send_gcode("G91")  # 设置为相对坐标
+            self._send_gcode("G1 E10 F100")  # 慢速挤出10mm
+            self._send_gcode("G90")  # 恢复为绝对坐标
+            
+        except Exception as e:
+            self.logger.error(f"恢复前准备工作时发生错误: {str(e)}")
+    
+    def pause_print(self):
+        """暂停打印"""
+        result = self._send_gcode(self.pause_cmd)
+        if result:
+            self.logger.info("打印已暂停")
         return result
     
     def cancel_print(self):
