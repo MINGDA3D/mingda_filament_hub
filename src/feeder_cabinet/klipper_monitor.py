@@ -39,6 +39,11 @@ class KlipperMonitor:
         self.ws_thread = None
         self.ws_connected = False
         self.next_request_id = 1
+        self.reconnect_count = 0
+        self.max_reconnect_attempts = 10
+        self.reconnect_interval = 5
+        self.auto_reconnect = True
+        self.reconnect_thread = None
         
         # 状态变量
         self.printer_state = "unknown"
@@ -82,42 +87,60 @@ class KlipperMonitor:
             bool: 连接是否成功
         """
         try:
-            # 初始化WebSocket连接
-            self.ws = websocket.WebSocketApp(
-                self.ws_url,
-                on_open=self._on_ws_open,
-                on_message=self._on_ws_message,
-                on_error=self._on_ws_error,
-                on_close=self._on_ws_close
-            )
-            
-            # 启动WebSocket线程
-            self.ws_thread = threading.Thread(
-                target=self.ws.run_forever,
-                daemon=True
-            )
-            self.ws_thread.start()
-            
-            # 等待连接建立
-            timeout = 5
-            start_time = time.time()
-            while not self.ws_connected and (time.time() - start_time) < timeout:
-                time.sleep(0.1)
-                
-            if not self.ws_connected:
-                self.logger.error("WebSocket连接超时")
-                return False
-                
-            self.logger.info(f"成功连接到Klipper/Moonraker WebSocket: {self.ws_url}")
-            return True
+            self.reconnect_count = 0
+            return self._establish_connection()
         except Exception as e:
             self.logger.error(f"连接Klipper/Moonraker失败: {str(e)}")
             return False
+    
+    def _establish_connection(self) -> bool:
+        """
+        建立WebSocket连接
+        
+        Returns:
+            bool: 连接是否成功
+        """
+        # 如果已有连接，先关闭
+        if self.ws:
+            self.ws.close()
+            if self.ws_thread and self.ws_thread.is_alive():
+                self.ws_thread.join(timeout=1.0)
+        
+        # 初始化WebSocket连接
+        self.logger.info(f"正在连接到WebSocket: {self.ws_url}")
+        self.ws = websocket.WebSocketApp(
+            self.ws_url,
+            on_open=self._on_ws_open,
+            on_message=self._on_ws_message,
+            on_error=self._on_ws_error,
+            on_close=self._on_ws_close
+        )
+        
+        # 启动WebSocket线程
+        self.ws_thread = threading.Thread(
+            target=self.ws.run_forever,
+            daemon=True
+        )
+        self.ws_thread.start()
+        
+        # 等待连接建立
+        timeout = 5
+        start_time = time.time()
+        while not self.ws_connected and (time.time() - start_time) < timeout:
+            time.sleep(0.1)
+            
+        if not self.ws_connected:
+            self.logger.error("WebSocket连接超时")
+            return False
+            
+        self.logger.info(f"成功连接到Klipper/Moonraker WebSocket: {self.ws_url}")
+        return True
     
     def _on_ws_open(self, ws):
         """WebSocket连接打开后的回调"""
         self.logger.info("WebSocket连接已打开")
         self.ws_connected = True
+        self.reconnect_count = 0  # 重置重连计数
         
         # 订阅打印机对象
         self._subscribe_objects()
@@ -148,6 +171,43 @@ class KlipperMonitor:
         """处理WebSocket连接关闭"""
         self.logger.info(f"WebSocket连接关闭: {close_status_code} - {close_msg}")
         self.ws_connected = False
+        
+        # 如果启用了自动重连，则尝试重连
+        if self.auto_reconnect:
+            self._schedule_reconnect()
+    
+    def _schedule_reconnect(self):
+        """安排重连任务"""
+        if self.reconnect_thread and self.reconnect_thread.is_alive():
+            return  # 已经有一个重连线程在运行
+            
+        if self.reconnect_count >= self.max_reconnect_attempts:
+            self.logger.error(f"重连尝试达到最大次数 ({self.max_reconnect_attempts})，停止重连")
+            return
+            
+        self.reconnect_count += 1
+        backoff_time = min(30, self.reconnect_interval * (2 ** (self.reconnect_count - 1)))  # 指数退避策略
+        
+        self.logger.info(f"计划在 {backoff_time} 秒后进行第 {self.reconnect_count} 次重连")
+        self.reconnect_thread = threading.Thread(
+            target=self._delayed_reconnect,
+            args=(backoff_time,),
+            daemon=True
+        )
+        self.reconnect_thread.start()
+    
+    def _delayed_reconnect(self, delay):
+        """延迟重连"""
+        time.sleep(delay)
+        self.logger.info(f"正在尝试第 {self.reconnect_count} 次重连...")
+        
+        if self._establish_connection():
+            self.logger.info("重连成功")
+        else:
+            self.logger.error("重连失败")
+            # 如果仍启用自动重连，则安排下一次重连
+            if self.auto_reconnect:
+                self._schedule_reconnect()
     
     def _handle_status_update(self, status):
         """处理状态更新数据"""
@@ -170,6 +230,14 @@ class KlipperMonitor:
             
         if 'extruder' in status:
             self.extruder_info.update(status['extruder'])
+        
+        # 检查断料状态
+        if self.runout_detection_enabled:
+            self._check_filament_status()
+        
+        # 检查是否可以恢复打印
+        if self.feed_resume_pending:
+            self._check_resume_conditions()
         
         # 调用状态回调
         state_info = {
@@ -329,9 +397,28 @@ class KlipperMonitor:
     
     def disconnect(self):
         """断开与Klipper/Moonraker的连接"""
+        self.auto_reconnect = False  # 禁用自动重连
         if self.ws:
             self.ws.close()
             self.logger.info("WebSocket连接已关闭")
+        
+        # 等待重连线程结束
+        if self.reconnect_thread and self.reconnect_thread.is_alive():
+            self.reconnect_thread.join(timeout=1.0)
+    
+    def enable_auto_reconnect(self, enable=True, max_attempts=10, interval=5):
+        """
+        启用或禁用自动重连
+        
+        Args:
+            enable: 是否启用自动重连
+            max_attempts: 最大重连尝试次数
+            interval: 初始重连间隔（秒）
+        """
+        self.auto_reconnect = enable
+        self.max_reconnect_attempts = max_attempts
+        self.reconnect_interval = interval
+        self.logger.info(f"自动重连{'启用' if enable else '禁用'}, 最大尝试次数: {max_attempts}, 初始间隔: {interval}秒")
     
     def enable_filament_runout_detection(self, sensor_pin: str = None):
         """
