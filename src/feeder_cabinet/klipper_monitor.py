@@ -155,13 +155,61 @@ class KlipperMonitor:
             
             # 处理状态更新通知
             if 'method' in data and data['method'] == 'notify_status_update':
-                self._handle_status_update(data['params'][0])
+                status_data = data['params'][0]
+                
+                # 检查是否包含toolhead信息及extruder字段
+                if 'toolhead' in status_data and 'extruder' in status_data['toolhead']:
+                    active_extruder_name = status_data['toolhead']['extruder']
+                    # 更新toolhead_info中的extruder字段
+                    if 'toolhead' not in self.toolhead_info:
+                        self.toolhead_info = {}
+                    self.toolhead_info['extruder'] = active_extruder_name
+                    
+                    old_active = self.active_extruder
+                    
+                    self.logger.debug(f"WebSocket通知：当前活跃挤出机名称 = {active_extruder_name}")
+                    
+                    # 更新活跃挤出机变量
+                    if active_extruder_name == 'extruder':
+                        self.active_extruder = 0
+                    elif active_extruder_name == 'extruder1':
+                        self.active_extruder = 1
+                        
+                    # 如果活跃挤出机发生变化，记录详细日志
+                    if old_active != self.active_extruder:
+                        self.logger.info(f"活跃挤出机从 {old_active} 变更为 {self.active_extruder}")
+                
+                # 处理常规状态更新
+                self._handle_status_update(status_data)
             
             # 处理查询响应
             elif 'result' in data and 'status' in data.get('result', {}):
-                self._handle_status_update(data['result'].get('status', {}))
+                status_data = data['result'].get('status', {})
                 
-            # 其他消息类型可以根据需要添加处理
+                # 检查是否包含toolhead信息及extruder字段
+                if 'toolhead' in status_data and 'extruder' in status_data['toolhead']:
+                    active_extruder_name = status_data['toolhead']['extruder']
+                    # 更新toolhead_info中的extruder字段
+                    if 'toolhead' not in self.toolhead_info:
+                        self.toolhead_info = {}
+                    self.toolhead_info['extruder'] = active_extruder_name
+                    
+                    old_active = self.active_extruder
+                    
+                    self.logger.debug(f"查询响应：当前活跃挤出机名称 = {active_extruder_name}")
+                    
+                    # 更新活跃挤出机变量
+                    if active_extruder_name == 'extruder':
+                        self.active_extruder = 0
+                    elif active_extruder_name == 'extruder1':
+                        self.active_extruder = 1
+                        
+                    # 如果活跃挤出机发生变化，记录详细日志
+                    if old_active != self.active_extruder:
+                        self.logger.info(f"活跃挤出机从 {old_active} 变更为 {self.active_extruder}")
+                
+                # 处理常规状态更新
+                self._handle_status_update(status_data)
                 
         except Exception as e:
             self.logger.error(f"处理WebSocket消息时发生错误: {str(e)}")
@@ -228,23 +276,18 @@ class KlipperMonitor:
                     self.can_comm.send_message(cmd)
                     self.logger.debug(f"发送状态变化命令: {hex(cmd)}")
                 
+        # 更新toolhead信息（除了active_extruder字段外）
         if 'toolhead' in status:
             self.toolhead_info.update(status['toolhead'])
-            # 更新活动挤出机
-            if 'active_extruder' in self.toolhead_info:
-                active_extruder_name = self.toolhead_info['active_extruder']
-                if active_extruder_name == 'extruder':
-                    self.active_extruder = 0
-                elif active_extruder_name == 'extruder1':
-                    self.active_extruder = 1
-                self.logger.debug(f"当前活动挤出机: {self.active_extruder}")
-            
+            # 注意：活跃挤出机在WebSocket回调中处理
+        
+        # 更新挤出机信息
         if 'extruder' in status:
             self.extruder_info.update(status['extruder'])
-            
+        
         if 'extruder1' in status:
             self.extruder1_info.update(status['extruder1'])
-            
+        
         # 更新断料传感器状态
         for i, sensor_name in enumerate(self.filament_sensor_names):
             sensor_key = f"filament_switch_sensor {sensor_name}"
@@ -306,13 +349,13 @@ class KlipperMonitor:
                 "params": {
                     "objects": {
                         "print_stats": None,
-                        "toolhead": None,
+                        "toolhead": ["extruder", "position"],  # 明确订阅extruder字段
                         "extruder": None,
-                        "extruder1": None,  # 新增：订阅extruder1
+                        "extruder1": None,
                         "virtual_sdcard": None,
                         "pause_resume": None,
-                        "filament_switch_sensor Filament_Sensor0": None,  # 新增：订阅断料传感器0
-                        "filament_switch_sensor Filament_Sensor1": None   # 新增：订阅断料传感器1
+                        "filament_switch_sensor Filament_Sensor0": None,
+                        "filament_switch_sensor Filament_Sensor1": None
                     }
                 },
                 "id": self._get_next_request_id()
@@ -379,13 +422,13 @@ class KlipperMonitor:
                 "params": {
                     "objects": {
                         "print_stats": None,
-                        "toolhead": None,
+                        "toolhead": ["extruder", "position"],  # 明确包含extruder字段
                         "extruder": None,
-                        "extruder1": None,  # 新增：查询extruder1
+                        "extruder1": None,
                         "virtual_sdcard": None,
                         "pause_resume": None,
-                        "filament_switch_sensor Filament_Sensor0": None,  # 新增：查询断料传感器0
-                        "filament_switch_sensor Filament_Sensor1": None   # 新增：查询断料传感器1
+                        "filament_switch_sensor Filament_Sensor0": None,
+                        "filament_switch_sensor Filament_Sensor1": None
                     }
                 },
                 "id": self._get_next_request_id()
@@ -483,9 +526,55 @@ class KlipperMonitor:
         self.runout_detection_enabled = False
         self.logger.info("禁用断料检测")
     
+    def _update_active_extruder(self):
+        """
+        主动从Klipper更新当前活跃挤出机
+        """
+        try:
+            if not self.ws_connected:
+                self.logger.error("WebSocket未连接，无法更新活跃挤出机")
+                return False
+            
+            # 查询打印机对象，获取toolhead的extruder字段
+            # 根据API文档，toolhead.extruder字段包含当前活跃挤出机名称
+            query_request = {
+                "jsonrpc": "2.0",
+                "method": "printer.objects.query",
+                "params": {
+                    "objects": {
+                        "toolhead": ["extruder"]
+                    }
+                },
+                "id": self._get_next_request_id()
+            }
+            
+            # 发送查询请求
+            self.ws.send(json.dumps(query_request))
+            self.logger.debug("已发送活跃挤出机查询请求")
+            
+            # 注：实际响应会通过WebSocket回调处理
+            return True
+        except Exception as e:
+            self.logger.error(f"更新活跃挤出机时发生错误: {str(e)}")
+            return False
+    
     def _check_filament_status(self):
         """检查断料状态"""
         try:
+            # 先主动更新活跃挤出机信息
+            self._update_active_extruder()
+            
+            # 记录当前状态用于调试
+            self.logger.debug(f"检查断料状态 - 打印机状态: {self.printer_state}, " +
+                            f"活跃挤出机: {self.active_extruder}, " +
+                            f"断料状态: {self.filament_present}, " +
+                            f"补料请求状态: {self.feed_requested}, " +
+                            f"等待恢复状态: {self.feed_resume_pending}")
+                            
+            # 输出活跃挤出机的名称
+            active_extruder_name = self.toolhead_info.get('extruder', '未知')
+            self.logger.debug(f"当前活跃挤出机名称: {active_extruder_name}")
+            
             # 如果打印机处于打印状态，检查是否断料
             if self.printer_state == "printing":
                 # 检查两个挤出机的断料传感器
@@ -500,10 +589,28 @@ class KlipperMonitor:
             elif self.printer_state == "paused":
                 # 检查两个挤出机
                 for extruder in range(2):
+                    # 检查是否有断料但未发送补料请求的挤出机
                     if not self.feed_requested[extruder] and not self.filament_present[extruder]:
                         self.logger.info(f"检测到打印已暂停，挤出机 {extruder} 可能断料")
                         self._handle_filament_runout(extruder)
-                
+                    
+                    # 新增：如果已经发送了补料请求，但尚未恢复打印，则检查是否已经上料
+                    if self.feed_requested[extruder] and not self.feed_resume_pending[extruder]:
+                        self.logger.debug(f"挤出机 {extruder} 已请求补料，但尚未等待恢复")
+                        self.feed_resume_pending[extruder] = True
+                        
+                    # 新增：如果打印已暂停但没有记录请求补料，同时是当前活跃挤出机，
+                    # 则为其设置等待恢复标志，以便当检测到有料时能自动恢复打印
+                    if self.printer_state == "paused" and extruder == self.active_extruder:
+                        if not self.filament_present[extruder] and not self.feed_resume_pending[extruder]:
+                            self.logger.info(f"主动为暂停状态下的活跃挤出机 {extruder} 设置等待恢复标志")
+                            self.feed_resume_pending[extruder] = True
+                        elif self.filament_present[extruder] and not self.feed_resume_pending[extruder]:
+                            # 如果有料但没等待恢复标志，也设置为等待恢复（为了处理用户手动添加料的情况）
+                            self.logger.info(f"检测到活跃挤出机 {extruder} 已有料但无恢复标志，设置等待恢复")
+                            self.feed_resume_pending[extruder] = True
+                            self._check_resume_conditions(extruder)
+            
         except Exception as e:
             self.logger.error(f"检查断料状态时发生错误: {str(e)}")
     
@@ -528,21 +635,24 @@ class KlipperMonitor:
         """
         self.logger.info(f"处理挤出机 {extruder} 断料事件开始")
         
-        # 步骤1: 暂停打印（如果还没暂停）
-        if self.printer_state == "printing":
-            self.logger.info("暂停打印")
-            self.pause_print()
-            # 等待打印机进入暂停状态
-            timeout = 10  # 设置超时，防止无限等待
-            start_time = time.time()
-            while self.printer_state != "paused" and time.time() - start_time < timeout:
-                time.sleep(0.5)
+        # 获取并记录当前活跃挤出机
+        self._update_active_extruder()
+        active_extruder_name = self.toolhead_info.get('extruder', '未知')
+        self.logger.info(f"断料处理 - 当前活跃挤出机: {self.active_extruder} ({active_extruder_name})")
+        self.logger.info(f"断料处理 - 断料的挤出机: {extruder}")
         
+        # 步骤1: 暂停打印（Klipper会自动处理）
+
         # 步骤2: 保存打印状态（Klipper会自动处理）
         self.logger.info("打印状态已保存")
         
         # 步骤3: 发送补料请求到送料柜
         self.logger.info(f"发送补料请求到送料柜，挤出机 {extruder}")
+        
+        # 再次检查当前活跃挤出机
+        self._update_active_extruder()
+        self.logger.info(f"发送补料请求前 - 当前活跃挤出机: {self.active_extruder}")
+        
         if self.can_comm.request_feed(extruder=extruder):
             self.feed_requested[extruder] = True
             self.feed_resume_pending[extruder] = True
@@ -573,9 +683,37 @@ class KlipperMonitor:
         """
         if not self.feed_resume_pending[extruder]:
             return
-            
+        
         try:
-            # 获取送料柜最新状态
+            # 先主动更新活跃挤出机信息
+            self._update_active_extruder()
+            
+            # 记录当前活跃挤出机的详细信息
+            self.logger.debug(f"检查恢复条件 - 挤出机: {extruder}, 当前活跃挤出机: {self.active_extruder}")
+            self.logger.debug(f"活跃挤出机名称: {self.toolhead_info.get('extruder', '未知')}")
+            self.logger.debug(f"挤出机状态: {self.filament_present}")
+            
+            # 直接检查断料传感器状态
+            if self._check_new_filament_loaded(extruder):
+                self.logger.info(f"检测到挤出机 {extruder} 新耗材已装载")
+                
+                # 判断是否是当前活跃的挤出机
+                is_active_extruder = (extruder == self.active_extruder)
+                
+                # 输出更详细的判断信息
+                self.logger.info(f"挤出机{extruder}是否为活跃挤出机: {is_active_extruder}, " +
+                               f"当前活跃挤出机: {self.active_extruder}, " + 
+                               f"活跃挤出机名称: {self.toolhead_info.get('extruder', '未知')}")
+                
+                # 只要是当前活跃的挤出机有料，且处于暂停状态，就可以恢复打印
+                if is_active_extruder and self.printer_state == "paused":
+                    self.logger.info(f"当前活跃挤出机 {extruder} 已装载新耗材，恢复打印")
+                    self.resume_print()
+                elif not is_active_extruder:
+                    self.logger.info(f"挤出机 {extruder} 不是当前活跃挤出机({self.active_extruder})，等待")
+                return
+                
+            # 如果没有检测到新耗材，则继续查询送料柜状态
             status = self.can_comm.get_last_status()
             
             if not status:
@@ -591,12 +729,17 @@ class KlipperMonitor:
                 
                 # 检查是否有新耗材
                 if self._check_new_filament_loaded(extruder):
-                    self.logger.info(f"检测到挤出机 {extruder} 新耗材已装载，恢复打印")
-                    # 如果两个挤出机都已就绪或不需要补料，则恢复打印
-                    if not any(self.feed_resume_pending) or all(self.filament_present):
+                    self.logger.info(f"检测到挤出机 {extruder} 新耗材已装载")
+                    
+                    # 判断是否是当前活跃的挤出机
+                    is_active_extruder = (extruder == self.active_extruder)
+                    
+                    # 只要是当前活跃的挤出机有料，且处于暂停状态，就可以恢复打印
+                    if is_active_extruder and self.printer_state == "paused":
+                        self.logger.info(f"当前活跃挤出机 {extruder} 已装载新耗材，恢复打印")
                         self.resume_print()
-                    else:
-                        self.logger.info("等待所有挤出机准备就绪后恢复打印")
+                    elif not is_active_extruder:
+                        self.logger.info(f"挤出机 {extruder} 不是当前活跃挤出机({self.active_extruder})，等待")
                 else:
                     self.logger.warning(f"挤出机 {extruder} 送料完成但未检测到新耗材，等待")
                     
@@ -650,14 +793,27 @@ class KlipperMonitor:
     
     def resume_print(self):
         """恢复打印"""
+        # 确保打印机处于暂停状态
+        if self.printer_state != "paused":
+            self.logger.warning(f"无法恢复打印：打印机不处于暂停状态，当前状态为 {self.printer_state}")
+            return False
+        
+        # 更新活跃挤出机信息
+        self._update_active_extruder()
+        self.logger.info(f"恢复打印前 - 当前活跃挤出机: {self.active_extruder} ({self.toolhead_info.get('extruder', '未知')})")
+        
+        # 确保发送正确的T命令选择活跃挤出机
+        self._send_gcode(f"T{self.active_extruder}")
+        self.logger.info(f"已发送命令选择挤出机 T{self.active_extruder}")
+        
         # 重置所有挤出机的请求状态
         for i in range(2):
             self.feed_requested[i] = False
             self.feed_resume_pending[i] = False
-            
+        
         # 恢复前准备工作
         self._prepare_for_resume()
-            
+        
         result = self._send_gcode(self.resume_cmd)
         if result:
             self.logger.info("打印已恢复")
@@ -674,9 +830,6 @@ class KlipperMonitor:
                 if extruder_info.get('temperature', 0) < extruder_info.get('target', 0) - 5:
                     self.logger.info(f"等待挤出机 {extruder} 热端达到目标温度")
                     # 实际项目中可以添加等待逻辑或通知用户手动确认
-            
-            # 切换到活动挤出机
-            self._send_gcode(f"T{self.active_extruder}")
             
             # 操作完成后进行少量挤出，确保耗材正常
             self._send_gcode("G91")  # 设置为相对坐标
@@ -766,4 +919,34 @@ class KlipperMonitor:
             'printer': printer_state
         }
         
-        return status 
+        return status
+
+    def set_active_extruder(self, extruder: int):
+        """
+        手动设置当前活跃挤出机
+        
+        Args:
+            extruder: 挤出机编号(0 或 1)
+        """
+        if extruder not in [0, 1]:
+            self.logger.error(f"无效的挤出机编号: {extruder}")
+            return False
+        
+        old_active = self.active_extruder
+        self.active_extruder = extruder
+        
+        # 在toolhead_info中也更新
+        if extruder == 0:
+            self.toolhead_info['extruder'] = 'extruder'
+        else:
+            self.toolhead_info['extruder'] = 'extruder1'
+        
+        self.logger.info(f"手动设置活跃挤出机从 {old_active} 变更为 {extruder}")
+        
+        # 如果打印已暂停，且新活跃挤出机有料但未设置恢复标志，则设置
+        if self.printer_state == "paused" and self.filament_present[extruder] and not self.feed_resume_pending[extruder]:
+            self.logger.info(f"检测到新活跃挤出机 {extruder} 已有料，设置等待恢复")
+            self.feed_resume_pending[extruder] = True
+            self._check_resume_conditions(extruder)
+        
+        return True 

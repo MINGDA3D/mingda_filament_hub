@@ -18,6 +18,7 @@ import threading
 import json
 import yaml
 from typing import Dict, Any, Optional
+import requests
 
 from .can_communication import FeederCabinetCAN
 from .klipper_monitor import KlipperMonitor
@@ -236,6 +237,17 @@ class FeederCabinetApp:
                 moonraker_url=klipper_config['moonraker_url']
             )
             
+            # 设置默认活跃挤出机
+            extruder_config = self.config.get('extruders', {})
+            active_extruder = extruder_config.get('active', 0)
+            if active_extruder in [0, 1]:
+                self.klipper_monitor.active_extruder = active_extruder
+                if active_extruder == 0:
+                    self.klipper_monitor.toolhead_info['extruder'] = 'extruder'
+                else:
+                    self.klipper_monitor.toolhead_info['extruder'] = 'extruder1'
+                self.logger.info(f"设置默认活跃挤出机: {active_extruder}")
+            
             # 配置断料检测
             filament_config = self.config['filament_runout']
             if filament_config.get('enabled', True):
@@ -266,6 +278,48 @@ class FeederCabinetApp:
             self.logger.error(f"初始化应用程序时发生错误: {str(e)}")
             return False
             
+    def register_klipper_macros(self) -> bool:
+        """
+        注册Klipper G-Code宏
+        
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            # 添加GET_ACTIVE_EXTRUDER宏
+            get_active_extruder_macro = """
+[gcode_macro GET_ACTIVE_EXTRUDER]
+description: 获取当前活跃挤出机
+gcode:
+  {% set extruder = printer.toolhead.extruder %}
+  { action_respond_info("当前活跃挤出机: " ~ extruder) }
+"""
+            # 尝试将宏写入临时文件
+            macros_path = "/tmp/feeder_cabinet_macros.cfg"
+            with open(macros_path, "w") as f:
+                f.write(get_active_extruder_macro)
+            
+            # 请求Klipper加载配置文件
+            try:
+                response = requests.post(
+                    f"{self.config['klipper']['moonraker_url']}/printer/gcode/script",
+                    json={"script": f"INCLUDE {macros_path}"}
+                )
+                
+                if response.status_code == 200:
+                    self.logger.info("成功注册Klipper GET_ACTIVE_EXTRUDER宏")
+                    return True
+                else:
+                    self.logger.error(f"注册Klipper宏失败: {response.status_code}, {response.text}")
+                    return False
+            except Exception as e:
+                self.logger.error(f"请求Klipper加载宏时发生错误: {str(e)}")
+                return False
+            
+        except Exception as e:
+            self.logger.error(f"注册Klipper宏时发生错误: {str(e)}")
+            return False
+
     def start(self) -> bool:
         """
         启动应用程序
@@ -289,6 +343,9 @@ class FeederCabinetApp:
                 self.can_comm.disconnect()
                 return False
                 
+            # 注册Klipper宏
+            self.register_klipper_macros()
+            
             # 启动Klipper监控
             update_interval = self.config['klipper']['update_interval']
             self.klipper_monitor.start_monitoring(interval=update_interval)
@@ -336,6 +393,53 @@ class FeederCabinetApp:
             self.logger.info("接收到终止信号，正在停止...")
         finally:
             self.stop()
+
+    def register_gcode_commands(self):
+        """
+        注册G-code命令处理程序
+        """
+        try:
+            # 尝试获取Klipper的G-code命令处理程序
+            result = requests.get(f"{self.config['klipper']['moonraker_url']}/printer/objects/query?gcode_macro=*")
+            
+            if result.status_code != 200:
+                self.logger.error(f"获取G-code命令处理程序失败: {result.status_code}")
+                return False
+            
+            # 注册命令处理函数
+            def handle_gcode_command(gcmd):
+                try:
+                    command = gcmd.get_command()
+                    params = {}
+                    for param in gcmd.get_params():
+                        params[param] = gcmd.get(param)
+                    
+                    # 使用G-code宏处理类处理命令
+                    result = self.gcode_macro_handler.handle_gcode_command(command, **params)
+                    gcmd.respond_info(json.dumps(result))
+                except Exception as e:
+                    self.logger.error(f"处理G-code命令时发生错误: {str(e)}")
+                    gcmd.respond_info(f"错误: {str(e)}")
+            
+            # 注册自定义G-code命令
+            for command_name in self.gcode_macro_handler.command_map.keys():
+                try:
+                    result = requests.post(
+                        f"{self.config['klipper']['moonraker_url']}/printer/gcode/script",
+                        json={"script": f"REGISTER_COMMAND CMD={command_name} FUNC=handle_gcode_command"}
+                    )
+                    
+                    if result.status_code == 200:
+                        self.logger.info(f"成功注册G-code命令: {command_name}")
+                    else:
+                        self.logger.error(f"注册G-code命令失败: {command_name}, 状态码: {result.status_code}")
+                except Exception as e:
+                    self.logger.error(f"注册G-code命令时发生错误: {command_name}, {str(e)}")
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"注册G-code命令处理程序时发生错误: {str(e)}")
+            return False
 
 def parse_args():
     """解析命令行参数"""

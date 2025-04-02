@@ -58,42 +58,80 @@ gcode:
 
 from typing import Dict, Any, Optional, Callable
 import logging
+import re
+
+from .klipper_monitor import KlipperMonitor
+from .can_communication import FeederCabinetCAN
 
 class GCodeMacroHandler:
     """G-code宏处理类，用于处理远程G-code命令"""
     
-    def __init__(self, can_comm, klipper_monitor):
+    def __init__(self, klipper_monitor: KlipperMonitor, can_comm: FeederCabinetCAN):
         """
-        初始化处理器
+        初始化G-code宏处理类
         
         Args:
-            can_comm: CAN通信实例
             klipper_monitor: Klipper监控器实例
+            can_comm: CAN通信实例
         """
         self.logger = logging.getLogger("feeder_cabinet.gcode")
-        self.can_comm = can_comm
         self.klipper_monitor = klipper_monitor
+        self.can_comm = can_comm
         
-    def register_methods(self, register_method_func: Callable):
+        # 命令映射
+        self.command_map = {
+            "FEED_REQUEST": self.request_feed,
+            "FEED_STOP": self.stop_feed,
+            "GET_FEEDER_STATUS": self.get_status,
+            "SET_ACTIVE_EXTRUDER": self.set_active_extruder,
+            "GET_ACTIVE_EXTRUDER": self.get_active_extruder
+        }
+    
+    def handle_gcode_command(self, cmd: str) -> Dict[str, Any]:
         """
-        注册远程方法
+        处理G-code命令
         
         Args:
-            register_method_func: 注册方法的回调函数
+            cmd: G-code命令字符串
+            
+        Returns:
+            Dict: 包含处理结果的字典
         """
-        # 定义要注册的方法
-        methods = {
-            "request_feed": self.request_feed,
-            "stop_feed": self.stop_feed,
-            "query_status": self.query_status,
-            "enable_runout_detection": self.enable_runout_detection,
-            "disable_runout_detection": self.disable_runout_detection
-        }
+        self.logger.info(f"接收到G-code命令: {cmd}")
         
-        # 注册所有方法
-        for name, method in methods.items():
-            register_method_func(name, method)
-            self.logger.info(f"已注册远程方法: {name}")
+        # 解析命令和参数
+        command_match = re.match(r'^([A-Z_]+)(?:\s+(.*))?$', cmd.strip())
+        if not command_match:
+            self.logger.error(f"无效的G-code命令格式: {cmd}")
+            return {"success": False, "message": "无效的命令格式"}
+            
+        command_name = command_match.group(1)
+        params_str = command_match.group(2) or ""
+        
+        # 解析参数
+        params = {}
+        if params_str:
+            param_matches = re.finditer(r'([A-Z]+)=([^\s]+)', params_str)
+            for match in param_matches:
+                param_name = match.group(1)
+                param_value = match.group(2)
+                
+                # 尝试转换为数值
+                try:
+                    if '.' in param_value:
+                        params[param_name] = float(param_value)
+                    else:
+                        params[param_name] = int(param_value)
+                except ValueError:
+                    params[param_name] = param_value
+        
+        # 执行命令
+        if command_name in self.command_map:
+            self.logger.debug(f"执行命令 {command_name} 参数: {params}")
+            return self.command_map[command_name](**params)
+        else:
+            self.logger.error(f"未知命令: {command_name}")
+            return {"success": False, "message": f"未知命令: {command_name}"}
     
     def request_feed(self, extruder: int = 0) -> Dict[str, Any]:
         """
@@ -134,6 +172,86 @@ class GCodeMacroHandler:
         else:
             self.logger.error("停止送料请求发送失败")
             return {"success": False, "message": "停止送料请求发送失败"}
+    
+    def get_status(self) -> Dict[str, Any]:
+        """
+        获取送料柜状态
+        
+        Returns:
+            Dict: 包含状态信息的字典
+        """
+        self.logger.info("G-code命令: 获取送料柜状态")
+        
+        status = self.can_comm.get_last_status() or {}
+        printer_status = self.klipper_monitor.get_printer_status() or {}
+        
+        return {
+            "success": True, 
+            "status": {
+                "feeder": status,
+                "printer": printer_status
+            }
+        }
+        
+    def set_active_extruder(self, extruder: int = 0) -> Dict[str, Any]:
+        """
+        设置当前活跃挤出机
+        
+        Args:
+            extruder: 挤出机编号
+            
+        Returns:
+            Dict: 包含操作结果的字典
+        """
+        self.logger.info(f"G-code命令: 设置活跃挤出机为 {extruder}")
+        
+        result = self.klipper_monitor.set_active_extruder(extruder)
+        if result:
+            return {"success": True, "message": f"已设置活跃挤出机为 {extruder}"}
+        else:
+            return {"success": False, "message": f"设置活跃挤出机失败"}
+    
+    def get_active_extruder(self) -> Dict[str, Any]:
+        """
+        获取当前活跃挤出机
+        
+        Returns:
+            Dict: 包含活跃挤出机信息的字典
+        """
+        self.logger.info("G-code命令: 获取活跃挤出机")
+        
+        # 主动更新活跃挤出机信息
+        self.klipper_monitor._update_active_extruder()
+        
+        active_extruder = self.klipper_monitor.active_extruder
+        active_name = self.klipper_monitor.toolhead_info.get('active_extruder', '未知')
+        
+        return {
+            "success": True,
+            "active_extruder": active_extruder,
+            "active_extruder_name": active_name
+        }
+
+    def register_methods(self, register_method_func: Callable):
+        """
+        注册远程方法
+        
+        Args:
+            register_method_func: 注册方法的回调函数
+        """
+        # 定义要注册的方法
+        methods = {
+            "request_feed": self.request_feed,
+            "stop_feed": self.stop_feed,
+            "query_status": self.query_status,
+            "enable_runout_detection": self.enable_runout_detection,
+            "disable_runout_detection": self.disable_runout_detection
+        }
+        
+        # 注册所有方法
+        for name, method in methods.items():
+            register_method_func(name, method)
+            self.logger.info(f"已注册远程方法: {name}")
     
     def query_status(self) -> Dict[str, Any]:
         """
