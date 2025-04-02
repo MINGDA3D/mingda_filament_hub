@@ -132,7 +132,14 @@ class FeederCabinetApp:
             },
             'filament_runout': {
                 'enabled': True,
-                'sensor_pin': None
+                'sensors': [
+                    {'name': 'Filament_Sensor0', 'extruder': 0},
+                    {'name': 'Filament_Sensor1', 'extruder': 1}
+                ]
+            },
+            'extruders': {
+                'count': 2,  # 默认支持双挤出机
+                'active': 0  # 默认活动挤出机
             }
         }
         
@@ -149,6 +156,15 @@ class FeederCabinetApp:
                 self.logger.error(f"加载配置文件时发生错误: {str(e)}")
         else:
             self.logger.info("使用默认配置")
+        
+        # 记录关键配置项
+        self.logger.info(f"CAN接口: {config['can']['interface']}, 波特率: {config['can']['bitrate']}")
+        self.logger.info(f"Moonraker URL: {config['klipper']['moonraker_url']}")
+        self.logger.info(f"挤出机数量: {config['extruders']['count']}")
+        self.logger.info(f"断料检测: {'启用' if config['filament_runout']['enabled'] else '禁用'}")
+        if config['filament_runout']['enabled']:
+            for sensor in config['filament_runout']['sensors']:
+                self.logger.info(f"断料传感器: {sensor['name']} 用于挤出机 {sensor['extruder']}")
         
         return config
     
@@ -223,9 +239,20 @@ class FeederCabinetApp:
             # 配置断料检测
             filament_config = self.config['filament_runout']
             if filament_config.get('enabled', True):
-                self.klipper_monitor.enable_filament_runout_detection(
-                    sensor_pin=filament_config.get('sensor_pin')
-                )
+                # 获取传感器配置
+                sensor_names = []
+                for sensor in filament_config.get('sensors', []):
+                    name = sensor.get('name')
+                    if name:
+                        sensor_names.append(name)
+                
+                # 设置传感器名称
+                if sensor_names:
+                    self.klipper_monitor.filament_sensor_names = sensor_names
+                    self.logger.info(f"配置断料传感器: {sensor_names}")
+                
+                # 启用断料检测
+                self.klipper_monitor.enable_filament_runout_detection()
                 
                 # 配置自动重连
                 self.klipper_monitor.enable_auto_reconnect(

@@ -56,6 +56,10 @@ class FeederCabinetCAN:
         
         self._status_callback = None
         
+        # 添加状态存储
+        self.last_status = {}  # 存储最后一次接收到的状态
+        self.last_extruder_status = [None, None]  # 每个挤出机的最后状态
+        
     def connect(self) -> bool:
         """
         连接到CAN总线并执行握手过程
@@ -225,15 +229,42 @@ class FeederCabinetCAN:
         status = msg.data[0]
         progress = msg.data[1]
         error_code = msg.data[2]
+        extruder = msg.data[3]  # 新增：从消息中获取挤出机编号
+        
+        # 存储状态信息
+        status_info = {
+            'status': status,
+            'progress': progress,
+            'error_code': error_code,
+            'extruder': extruder,
+            'timestamp': time.time()
+        }
+        
+        # 更新最后状态
+        self.last_status = status_info
+        
+        # 按挤出机存储状态
+        if 0 <= extruder < len(self.last_extruder_status):
+            self.last_extruder_status[extruder] = status_info
         
         if self._status_callback:
-            self._status_callback({
-                'status': status,
-                'progress': progress,
-                'error_code': error_code
-            })
+            self._status_callback(status_info)
             
-        self.logger.debug(f"收到消息: 状态={status}, 进度={progress}, 错误码={error_code}")
+        self.logger.debug(f"收到消息: 状态={status}, 进度={progress}, 错误码={error_code}, 挤出机={extruder}")
+        
+    def get_last_status(self, extruder=None):
+        """
+        获取最后一次接收到的状态信息
+        
+        Args:
+            extruder: 如果指定，获取指定挤出机的状态；否则获取全局最后状态
+            
+        Returns:
+            dict: 状态信息字典，如果没有则返回None
+        """
+        if extruder is not None and 0 <= extruder < len(self.last_extruder_status):
+            return self.last_extruder_status[extruder]
+        return self.last_status
         
     def send_printer_error(self, error_code: int = 0x04, extruder: int = 0) -> bool:
         """

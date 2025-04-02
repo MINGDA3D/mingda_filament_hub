@@ -50,6 +50,7 @@ class KlipperMonitor:
         self.print_stats = {}
         self.toolhead_info = {}
         self.extruder_info = {}
+        self.extruder1_info = {}  # 新增：第二个挤出机信息
         self.is_monitoring = False
         self.monitoring_thread = None
         
@@ -65,11 +66,13 @@ class KlipperMonitor:
         }
         
         # 断料检测相关
-        self.filament_present = True
-        self.filament_sensor_pin = None
+        self.filament_present = [True, True]  # 新增：两个挤出机的断料状态
+        self.filament_sensor_pins = [None, None]  # 新增：两个断料传感器引脚
+        self.filament_sensor_names = ["Filament_Sensor0", "Filament_Sensor1"]  # 新增：传感器名称
         self.runout_detection_enabled = False
-        self.feed_requested = False
-        self.feed_resume_pending = False
+        self.feed_requested = [False, False]  # 新增：补料请求状态（每个挤出机）
+        self.feed_resume_pending = [False, False]  # 新增：等待恢复状态（每个挤出机）
+        self.active_extruder = 0  # 新增：当前活动的挤出机
         
         # Gcode命令模板
         self.pause_cmd = "PAUSE"
@@ -227,24 +230,48 @@ class KlipperMonitor:
                 
         if 'toolhead' in status:
             self.toolhead_info.update(status['toolhead'])
+            # 更新活动挤出机
+            if 'active_extruder' in self.toolhead_info:
+                active_extruder_name = self.toolhead_info['active_extruder']
+                if active_extruder_name == 'extruder':
+                    self.active_extruder = 0
+                elif active_extruder_name == 'extruder1':
+                    self.active_extruder = 1
+                self.logger.debug(f"当前活动挤出机: {self.active_extruder}")
             
         if 'extruder' in status:
             self.extruder_info.update(status['extruder'])
+            
+        if 'extruder1' in status:
+            self.extruder1_info.update(status['extruder1'])
+            
+        # 更新断料传感器状态
+        for i, sensor_name in enumerate(self.filament_sensor_names):
+            sensor_key = f"filament_switch_sensor {sensor_name}"
+            if sensor_key in status:
+                sensor_data = status[sensor_key]
+                if "filament_detected" in sensor_data:
+                    self.filament_present[i] = sensor_data["filament_detected"]
+                    self.logger.debug(f"断料传感器 {sensor_name} 状态: {'有料' if self.filament_present[i] else '无料'}")
         
         # 检查断料状态
         if self.runout_detection_enabled:
             self._check_filament_status()
         
         # 检查是否可以恢复打印
-        if self.feed_resume_pending:
-            self._check_resume_conditions()
+        for extruder in range(2):  # 检查两个挤出机
+            if self.feed_resume_pending[extruder]:
+                self._check_resume_conditions(extruder)
         
         # 调用状态回调
         state_info = {
             'printer_state': self.printer_state,
             'print_stats': self.print_stats,
             'toolhead': self.toolhead_info,
-            'extruder': self.extruder_info
+            'extruder': self.extruder_info,
+            'extruder1': self.extruder1_info,
+            'active_extruder': self.active_extruder,
+            'filament_present': self.filament_present
         }
         
         for callback in self.status_callbacks:
@@ -281,8 +308,11 @@ class KlipperMonitor:
                         "print_stats": None,
                         "toolhead": None,
                         "extruder": None,
+                        "extruder1": None,  # 新增：订阅extruder1
                         "virtual_sdcard": None,
-                        "pause_resume": None
+                        "pause_resume": None,
+                        "filament_switch_sensor Filament_Sensor0": None,  # 新增：订阅断料传感器0
+                        "filament_switch_sensor Filament_Sensor1": None   # 新增：订阅断料传感器1
                     }
                 },
                 "id": self._get_next_request_id()
@@ -351,8 +381,11 @@ class KlipperMonitor:
                         "print_stats": None,
                         "toolhead": None,
                         "extruder": None,
+                        "extruder1": None,  # 新增：查询extruder1
                         "virtual_sdcard": None,
-                        "pause_resume": None
+                        "pause_resume": None,
+                        "filament_switch_sensor Filament_Sensor0": None,  # 新增：查询断料传感器0
+                        "filament_switch_sensor Filament_Sensor1": None   # 新增：查询断料传感器1
                     }
                 },
                 "id": self._get_next_request_id()
@@ -366,7 +399,10 @@ class KlipperMonitor:
                 'printer_state': self.printer_state,
                 'print_stats': self.print_stats,
                 'toolhead': self.toolhead_info,
-                'extruder': self.extruder_info
+                'extruder': self.extruder_info,
+                'extruder1': self.extruder1_info,
+                'active_extruder': self.active_extruder,
+                'filament_present': self.filament_present
             }
             
             return state_info
@@ -420,16 +456,27 @@ class KlipperMonitor:
         self.reconnect_interval = interval
         self.logger.info(f"自动重连{'启用' if enable else '禁用'}, 最大尝试次数: {max_attempts}, 初始间隔: {interval}秒")
     
-    def enable_filament_runout_detection(self, sensor_pin: str = None):
+    def enable_filament_runout_detection(self, sensor_pins=None):
         """
         启用断料检测
         
         Args:
-            sensor_pin: 断料传感器引脚
+            sensor_pins: 断料传感器引脚列表或单个引脚
         """
         self.runout_detection_enabled = True
-        self.filament_sensor_pin = sensor_pin
-        self.logger.info(f"启用断料检测，传感器引脚: {sensor_pin if sensor_pin else '使用Klipper内置检测'}")
+        
+        # 处理传感器引脚参数
+        if sensor_pins:
+            if isinstance(sensor_pins, list):
+                # 如果是列表，直接使用
+                for i, pin in enumerate(sensor_pins[:2]):  # 最多支持两个传感器
+                    self.filament_sensor_pins[i] = pin
+            else:
+                # 如果是单个值，设置给第一个传感器
+                self.filament_sensor_pins[0] = sensor_pins
+                
+        self.logger.info(f"启用断料检测，传感器引脚: {self.filament_sensor_pins}")
+        self.logger.info(f"使用传感器名称: {self.filament_sensor_names}")
     
     def disable_filament_runout_detection(self):
         """禁用断料检测"""
@@ -441,50 +488,45 @@ class KlipperMonitor:
         try:
             # 如果打印机处于打印状态，检查是否断料
             if self.printer_state == "printing":
-                # 检查是否有断料传感器信号
-                has_runout = self._check_runout_sensor()
-                
-                if has_runout and not self.feed_requested:
-                    self.logger.info("检测到断料，准备暂停打印并补料")
-                    self._handle_filament_runout()
+                # 检查两个挤出机的断料传感器
+                for extruder in range(2):
+                    has_runout = not self.filament_present[extruder]
+                    
+                    if has_runout and not self.feed_requested[extruder]:
+                        self.logger.info(f"检测到挤出机 {extruder} 断料，准备暂停打印并补料")
+                        self._handle_filament_runout(extruder)
             
             # 如果打印机处于暂停状态，可能是由于断料引起的
-            elif self.printer_state == "paused" and not self.feed_requested:
-                self.logger.info("检测到打印已暂停，可能是因为断料")
-                self._handle_filament_runout()
+            elif self.printer_state == "paused":
+                # 检查两个挤出机
+                for extruder in range(2):
+                    if not self.feed_requested[extruder] and not self.filament_present[extruder]:
+                        self.logger.info(f"检测到打印已暂停，挤出机 {extruder} 可能断料")
+                        self._handle_filament_runout(extruder)
                 
         except Exception as e:
             self.logger.error(f"检查断料状态时发生错误: {str(e)}")
     
-    def _check_runout_sensor(self) -> bool:
+    def _check_runout_sensor(self, extruder=0) -> bool:
         """
-        检查断料传感器状态
+        检查指定挤出机的断料传感器状态
         
+        Args:
+            extruder: 挤出机编号
+            
         Returns:
             bool: 是否断料
         """
-        # 如果有配置传感器引脚，通过GCODE获取传感器状态
-        if self.filament_sensor_pin:
-            try:
-                # 发送查询传感器状态的GCODE
-                query_cmd = f"QUERY_FILAMENT_SENSOR SENSOR=filament_sensor"
-                self._send_gcode(query_cmd)
-                
-                # 注意：这里依赖于Klipper的响应会在WebSocket回调中处理
-                # 实际实现可能需要添加更复杂的状态跟踪
-                
-                # 简化实现:直接检查打印机状态中是否有断料指示
-                return self.print_stats.get("filament_detected", True) == False
-            except Exception as e:
-                self.logger.error(f"查询断料传感器状态失败: {str(e)}")
-                return False
-        else:
-            # 如果没有配置传感器引脚，检查打印机状态中是否有断料指示
-            return self.print_stats.get("filament_detected", True) == False
+        return not self.filament_present[extruder]
     
-    def _handle_filament_runout(self):
-        """处理断料事件"""
-        self.logger.info("处理断料事件开始")
+    def _handle_filament_runout(self, extruder=0):
+        """
+        处理断料事件
+        
+        Args:
+            extruder: 断料的挤出机编号
+        """
+        self.logger.info(f"处理挤出机 {extruder} 断料事件开始")
         
         # 步骤1: 暂停打印（如果还没暂停）
         if self.printer_state == "printing":
@@ -500,31 +542,36 @@ class KlipperMonitor:
         self.logger.info("打印状态已保存")
         
         # 步骤3: 发送补料请求到送料柜
-        self.logger.info("发送补料请求到送料柜")
-        if self.can_comm.request_feed():
-            self.feed_requested = True
-            self.feed_resume_pending = True
-            self.logger.info("已发送补料请求")
+        self.logger.info(f"发送补料请求到送料柜，挤出机 {extruder}")
+        if self.can_comm.request_feed(extruder=extruder):
+            self.feed_requested[extruder] = True
+            self.feed_resume_pending[extruder] = True
+            self.logger.info(f"已发送挤出机 {extruder} 补料请求")
         else:
-            self.logger.error("发送补料请求失败")
+            self.logger.error(f"发送挤出机 {extruder} 补料请求失败")
             # 尝试重新发送补料请求
             retry_count = 3
             for i in range(retry_count):
-                self.logger.info(f"尝试重新发送补料请求 ({i+1}/{retry_count})")
+                self.logger.info(f"尝试重新发送挤出机 {extruder} 补料请求 ({i+1}/{retry_count})")
                 time.sleep(1)
-                if self.can_comm.request_feed():
-                    self.feed_requested = True
-                    self.feed_resume_pending = True
-                    self.logger.info("重新发送补料请求成功")
+                if self.can_comm.request_feed(extruder=extruder):
+                    self.feed_requested[extruder] = True
+                    self.feed_resume_pending[extruder] = True
+                    self.logger.info(f"重新发送挤出机 {extruder} 补料请求成功")
                     break
             
-            if not self.feed_requested:
-                self.logger.error(f"经过{retry_count}次尝试后，仍无法发送补料请求")
+            if not self.feed_requested[extruder]:
+                self.logger.error(f"经过{retry_count}次尝试后，仍无法发送挤出机 {extruder} 补料请求")
                 # 此处可添加通知用户的代码
     
-    def _check_resume_conditions(self):
-        """检查是否可以恢复打印"""
-        if not self.feed_resume_pending:
+    def _check_resume_conditions(self, extruder=0):
+        """
+        检查是否可以恢复打印
+        
+        Args:
+            extruder: 挤出机编号
+        """
+        if not self.feed_resume_pending[extruder]:
             return
             
         try:
@@ -540,51 +587,44 @@ class KlipperMonitor:
             
             if status_code == self.can_comm.STATUS_COMPLETE:
                 # 送料完成，准备恢复打印
-                self.logger.info("检测到送料完成，准备恢复打印")
+                self.logger.info(f"检测到挤出机 {extruder} 送料完成，准备恢复打印")
                 
-                # 检查是否有新耗材（简化实现，实际可能需要更复杂的传感器检测）
-                if self._check_new_filament_loaded():
-                    self.logger.info("检测到新耗材已装载，恢复打印")
-                    self.resume_print()
+                # 检查是否有新耗材
+                if self._check_new_filament_loaded(extruder):
+                    self.logger.info(f"检测到挤出机 {extruder} 新耗材已装载，恢复打印")
+                    # 如果两个挤出机都已就绪或不需要补料，则恢复打印
+                    if not any(self.feed_resume_pending) or all(self.filament_present):
+                        self.resume_print()
+                    else:
+                        self.logger.info("等待所有挤出机准备就绪后恢复打印")
                 else:
-                    self.logger.warning("送料完成但未检测到新耗材，等待")
+                    self.logger.warning(f"挤出机 {extruder} 送料完成但未检测到新耗材，等待")
                     
             elif status_code == self.can_comm.STATUS_ERROR:
                 # 送料出错
                 error_msg = self._get_error_message(error_code)
-                self.logger.error(f"送料过程出错: {error_msg}")
+                self.logger.error(f"挤出机 {extruder} 送料过程出错: {error_msg}")
                 # 此处可添加通知用户的代码
                 
             elif status_code == self.can_comm.STATUS_FEEDING:
                 # 送料中，等待
                 progress = status.get('progress', 0)
-                self.logger.debug(f"送料进行中，进度: {progress}%")
+                self.logger.debug(f"挤出机 {extruder} 送料进行中，进度: {progress}%")
                 
         except Exception as e:
-            self.logger.error(f"检查恢复条件时发生错误: {str(e)}")
+            self.logger.error(f"检查挤出机 {extruder} 恢复条件时发生错误: {str(e)}")
     
-    def _check_new_filament_loaded(self) -> bool:
+    def _check_new_filament_loaded(self, extruder=0) -> bool:
         """
         检查新耗材是否已经装载
         
+        Args:
+            extruder: 挤出机编号
+            
         Returns:
             bool: 新耗材是否已装载
         """
-        # 如果有配置传感器引脚，通过GCODE获取传感器状态
-        if self.filament_sensor_pin:
-            try:
-                # 发送查询传感器状态的GCODE
-                query_cmd = f"QUERY_FILAMENT_SENSOR SENSOR=filament_sensor"
-                self._send_gcode(query_cmd)
-                
-                # 简化实现:检查打印机状态中是否有耗材检测
-                return self.print_stats.get("filament_detected", False) == True
-            except Exception as e:
-                self.logger.error(f"查询耗材传感器状态失败: {str(e)}")
-                return False
-        else:
-            # 如果没有配置传感器引脚，假设送料柜完成后耗材已装载
-            return True
+        return self.filament_present[extruder]
     
     def _get_error_message(self, error_code: int) -> str:
         """
@@ -610,9 +650,10 @@ class KlipperMonitor:
     
     def resume_print(self):
         """恢复打印"""
-        if self.feed_requested:
-            self.feed_requested = False
-            self.feed_resume_pending = False
+        # 重置所有挤出机的请求状态
+        for i in range(2):
+            self.feed_requested[i] = False
+            self.feed_resume_pending[i] = False
             
         # 恢复前准备工作
         self._prepare_for_resume()
@@ -627,14 +668,17 @@ class KlipperMonitor:
         恢复打印前的准备工作
         """
         try:
-            # 如果需要，可以在此处添加恢复前的预热、挤出等操作
+            # 确保热端达到打印温度
+            for extruder in range(2):
+                extruder_info = self.extruder_info if extruder == 0 else self.extruder1_info
+                if extruder_info.get('temperature', 0) < extruder_info.get('target', 0) - 5:
+                    self.logger.info(f"等待挤出机 {extruder} 热端达到目标温度")
+                    # 实际项目中可以添加等待逻辑或通知用户手动确认
             
-            # 示例：确保热端达到打印温度
-            if self.extruder_info.get('temperature', 0) < self.extruder_info.get('target', 0) - 5:
-                self.logger.info("等待热端达到目标温度")
-                # 实际项目中可以添加等待逻辑或通知用户手动确认
+            # 切换到活动挤出机
+            self._send_gcode(f"T{self.active_extruder}")
             
-            # 示例：操作完成后进行少量挤出，确保耗材正常
+            # 操作完成后进行少量挤出，确保耗材正常
             self._send_gcode("G91")  # 设置为相对坐标
             self._send_gcode("G1 E10 F100")  # 慢速挤出10mm
             self._send_gcode("G90")  # 恢复为绝对坐标
@@ -651,11 +695,12 @@ class KlipperMonitor:
     
     def cancel_print(self):
         """取消打印"""
-        if self.feed_requested:
-            self.feed_requested = False
-            self.feed_resume_pending = False
+        # 重置所有挤出机的请求状态
+        for i in range(2):
+            self.feed_requested[i] = False
+            self.feed_resume_pending[i] = False
             # 通知送料柜停止送料
-            self.can_comm.stop_feed()
+            self.can_comm.stop_feed(extruder=i)
             
         result = self._send_gcode(self.cancel_cmd)
         if result:
@@ -709,7 +754,10 @@ class KlipperMonitor:
             'printer_state': self.printer_state,
             'print_stats': self.print_stats,
             'toolhead': self.toolhead_info,
-            'extruder': self.extruder_info
+            'extruder': self.extruder_info,
+            'extruder1': self.extruder1_info,
+            'active_extruder': self.active_extruder,
+            'filament_present': self.filament_present
         }
         
         # 组合状态信息
