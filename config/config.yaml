@@ -32,7 +32,7 @@ logging:
   level: INFO
   
   # 日志文件目录
-  log_dir: /var/log/feeder_cabinet
+  log_dir: /home/mingda/printer_data/logs
   
   # 是否输出到控制台（开发调试用）
   console_output: true

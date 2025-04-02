@@ -13,6 +13,7 @@ import threading
 import time
 import json
 import requests
+import websocket
 from typing import Optional, Dict, Any, List, Callable
 
 from .can_communication import FeederCabinetCAN
@@ -31,6 +32,13 @@ class KlipperMonitor:
         self.logger = logging.getLogger("feeder_cabinet.klipper")
         self.can_comm = can_comm
         self.moonraker_url = moonraker_url
+        self.ws_url = moonraker_url.replace("http://", "ws://") + "/websocket"
+        
+        # WebSocket相关
+        self.ws = None
+        self.ws_thread = None
+        self.ws_connected = False
+        self.next_request_id = 1
         
         # 状态变量
         self.printer_state = "unknown"
@@ -74,24 +82,108 @@ class KlipperMonitor:
             bool: 连接是否成功
         """
         try:
-            # 检查Moonraker连接
-            server_info = self._get_server_info()
-            if not server_info or not server_info.get('klippy_connected', False):
-                self.logger.error("无法连接到Klipper/Moonraker")
+            # 初始化WebSocket连接
+            self.ws = websocket.WebSocketApp(
+                self.ws_url,
+                on_open=self._on_ws_open,
+                on_message=self._on_ws_message,
+                on_error=self._on_ws_error,
+                on_close=self._on_ws_close
+            )
+            
+            # 启动WebSocket线程
+            self.ws_thread = threading.Thread(
+                target=self.ws.run_forever,
+                daemon=True
+            )
+            self.ws_thread.start()
+            
+            # 等待连接建立
+            timeout = 5
+            start_time = time.time()
+            while not self.ws_connected and (time.time() - start_time) < timeout:
+                time.sleep(0.1)
+                
+            if not self.ws_connected:
+                self.logger.error("WebSocket连接超时")
                 return False
                 
-            self.logger.info(f"成功连接到Klipper/Moonraker，版本: {server_info.get('moonraker_version', 'unknown')}")
-            
-            # 订阅打印机对象
-            self._subscribe_objects()
-            
-            # 获取初始状态
-            self.update_printer_state()
-            
+            self.logger.info(f"成功连接到Klipper/Moonraker WebSocket: {self.ws_url}")
             return True
         except Exception as e:
             self.logger.error(f"连接Klipper/Moonraker失败: {str(e)}")
             return False
+    
+    def _on_ws_open(self, ws):
+        """WebSocket连接打开后的回调"""
+        self.logger.info("WebSocket连接已打开")
+        self.ws_connected = True
+        
+        # 订阅打印机对象
+        self._subscribe_objects()
+    
+    def _on_ws_message(self, ws, message):
+        """处理WebSocket接收到的消息"""
+        try:
+            data = json.loads(message)
+            
+            # 处理状态更新通知
+            if 'method' in data and data['method'] == 'notify_status_update':
+                self._handle_status_update(data['params'][0])
+            
+            # 处理查询响应
+            elif 'result' in data and 'status' in data.get('result', {}):
+                self._handle_status_update(data['result'].get('status', {}))
+                
+            # 其他消息类型可以根据需要添加处理
+                
+        except Exception as e:
+            self.logger.error(f"处理WebSocket消息时发生错误: {str(e)}")
+    
+    def _on_ws_error(self, ws, error):
+        """处理WebSocket错误"""
+        self.logger.error(f"WebSocket错误: {str(error)}")
+    
+    def _on_ws_close(self, ws, close_status_code, close_msg):
+        """处理WebSocket连接关闭"""
+        self.logger.info(f"WebSocket连接关闭: {close_status_code} - {close_msg}")
+        self.ws_connected = False
+    
+    def _handle_status_update(self, status):
+        """处理状态更新数据"""
+        # 更新状态变量
+        if 'print_stats' in status:
+            self.print_stats = status['print_stats']
+            new_state = self.print_stats.get('state')
+            if new_state and new_state != self.printer_state:
+                self.printer_state = new_state
+                self.logger.info(f"打印机状态变化: {self.printer_state}")
+                
+                # 根据状态映射发送相应命令
+                if self.printer_state in self.state_map:
+                    cmd = self.state_map[self.printer_state]
+                    self.can_comm.send_message(cmd)
+                    self.logger.debug(f"发送状态变化命令: {hex(cmd)}")
+                
+        if 'toolhead' in status:
+            self.toolhead_info.update(status['toolhead'])
+            
+        if 'extruder' in status:
+            self.extruder_info.update(status['extruder'])
+        
+        # 调用状态回调
+        state_info = {
+            'printer_state': self.printer_state,
+            'print_stats': self.print_stats,
+            'toolhead': self.toolhead_info,
+            'extruder': self.extruder_info
+        }
+        
+        for callback in self.status_callbacks:
+            try:
+                callback(state_info)
+            except Exception as e:
+                self.logger.error(f"执行状态回调时发生错误: {str(e)}")
     
     def _get_server_info(self) -> Optional[dict]:
         """获取Moonraker服务器信息"""
@@ -108,8 +200,12 @@ class KlipperMonitor:
     
     def _subscribe_objects(self):
         """订阅Klipper对象状态"""
+        if not self.ws_connected:
+            self.logger.error("WebSocket未连接，无法订阅对象")
+            return
+            
         try:
-            data = {
+            subscribe_request = {
                 "jsonrpc": "2.0",
                 "method": "printer.objects.subscribe",
                 "params": {
@@ -121,14 +217,19 @@ class KlipperMonitor:
                         "pause_resume": None
                     }
                 },
-                "id": 5656
+                "id": self._get_next_request_id()
             }
             
-            response = requests.post(f"{self.moonraker_url}/printer/objects/subscribe", json=data, timeout=5)
-            if response.status_code != 200:
-                self.logger.error(f"订阅打印机对象失败，状态码: {response.status_code}")
+            self.ws.send(json.dumps(subscribe_request))
+            self.logger.info("已发送WebSocket订阅请求")
         except Exception as e:
             self.logger.error(f"订阅打印机对象时发生错误: {str(e)}")
+    
+    def _get_next_request_id(self):
+        """获取下一个请求ID"""
+        request_id = self.next_request_id
+        self.next_request_id += 1
+        return request_id
     
     def _send_gcode(self, command: str) -> bool:
         """
@@ -140,23 +241,23 @@ class KlipperMonitor:
         Returns:
             bool: 发送是否成功
         """
+        if not self.ws_connected:
+            self.logger.error("WebSocket未连接，无法发送G-code")
+            return False
+            
         try:
-            data = {
+            gcode_request = {
                 "jsonrpc": "2.0",
                 "method": "printer.gcode.script",
                 "params": {
                     "script": command
                 },
-                "id": 7823
+                "id": self._get_next_request_id()
             }
             
-            response = requests.post(f"{self.moonraker_url}/printer/gcode/script", json=data, timeout=5)
-            if response.status_code == 200:
-                self.logger.info(f"成功发送G-code: {command}")
-                return True
-            else:
-                self.logger.error(f"发送G-code失败，状态码: {response.status_code}")
-                return False
+            self.ws.send(json.dumps(gcode_request))
+            self.logger.info(f"成功发送G-code: {command}")
+            return True
         except Exception as e:
             self.logger.error(f"发送G-code时发生错误: {str(e)}")
             return False
@@ -168,9 +269,13 @@ class KlipperMonitor:
         Returns:
             Dict: 当前打印机状态
         """
+        if not self.ws_connected:
+            self.logger.error("WebSocket未连接，无法更新打印机状态")
+            return {}
+            
         try:
             # 查询打印机对象
-            data = {
+            query_request = {
                 "jsonrpc": "2.0",
                 "method": "printer.objects.query",
                 "params": {
@@ -182,41 +287,19 @@ class KlipperMonitor:
                         "pause_resume": None
                     }
                 },
-                "id": 4542
+                "id": self._get_next_request_id()
             }
             
-            response = requests.post(f"{self.moonraker_url}/printer/objects/query", json=data, timeout=5)
-            if response.status_code != 200:
-                self.logger.error(f"查询打印机对象失败，状态码: {response.status_code}")
-                return {}
+            self.ws.send(json.dumps(query_request))
             
-            resp_data = response.json()
-            status = resp_data.get('result', {}).get('status', {})
-            
-            # 更新状态变量
-            if 'print_stats' in status:
-                self.print_stats = status['print_stats']
-                self.printer_state = self.print_stats.get('state', 'unknown')
-                
-            if 'toolhead' in status:
-                self.toolhead_info = status['toolhead']
-                
-            if 'extruder' in status:
-                self.extruder_info = status['extruder']
-            
-            # 调用状态回调
+            # 注意：查询结果将通过WebSocket回调处理
+            # 这里直接返回当前状态
             state_info = {
                 'printer_state': self.printer_state,
                 'print_stats': self.print_stats,
                 'toolhead': self.toolhead_info,
                 'extruder': self.extruder_info
             }
-            
-            for callback in self.status_callbacks:
-                try:
-                    callback(state_info)
-                except Exception as e:
-                    self.logger.error(f"执行状态回调时发生错误: {str(e)}")
             
             return state_info
         except Exception as e:
@@ -230,64 +313,25 @@ class KlipperMonitor:
         Args:
             interval: 状态更新间隔（秒）
         """
+        # 注意：使用WebSocket后不再需要轮询
+        # 这个方法保留用于兼容性，但实际上不再需要单独的监控线程
         if self.is_monitoring:
             self.logger.info("监控已经在运行中")
             return
             
         self.is_monitoring = True
-        self.monitoring_thread = threading.Thread(
-            target=self._monitoring_loop,
-            args=(interval,),
-            daemon=True
-        )
-        self.monitoring_thread.start()
-        self.logger.info(f"开始监控打印机状态，间隔: {interval}秒")
+        self.logger.info("开始通过WebSocket监控打印机状态")
     
     def stop_monitoring(self):
         """停止监控打印机状态"""
         self.is_monitoring = False
-        if self.monitoring_thread and self.monitoring_thread.is_alive():
-            self.monitoring_thread.join(timeout=2.0)
         self.logger.info("停止监控打印机状态")
     
-    def _monitoring_loop(self, interval: float):
-        """
-        监控循环，定期获取打印机状态并处理
-        
-        Args:
-            interval: 状态更新间隔（秒）
-        """
-        last_state = None
-        
-        while self.is_monitoring:
-            try:
-                # 获取当前状态
-                self.update_printer_state()
-                
-                # 如果状态变化，发送状态给送料柜
-                if self.printer_state != last_state:
-                    self.logger.info(f"打印机状态变化: {last_state} -> {self.printer_state}")
-                    last_state = self.printer_state
-                    
-                    # 根据状态映射发送相应命令
-                    if self.printer_state in self.state_map:
-                        cmd = self.state_map[self.printer_state]
-                        self.can_comm.send_message(cmd)
-                        self.logger.debug(f"发送状态变化命令: {hex(cmd)}")
-                    
-                # 检查断料状态
-                if self.runout_detection_enabled:
-                    self._check_filament_status()
-                
-                # 检查是否可以恢复打印
-                if self.feed_resume_pending:
-                    self._check_resume_conditions()
-                
-            except Exception as e:
-                self.logger.error(f"监控循环中发生错误: {str(e)}")
-            
-            # 等待下一次更新
-            time.sleep(interval)
+    def disconnect(self):
+        """断开与Klipper/Moonraker的连接"""
+        if self.ws:
+            self.ws.close()
+            self.logger.info("WebSocket连接已关闭")
     
     def enable_filament_runout_detection(self, sensor_pin: str = None):
         """
@@ -406,11 +450,16 @@ class KlipperMonitor:
         Returns:
             Dict: 打印机状态信息
         """
-        # 获取服务器信息
+        # 获取服务器信息（仍使用HTTP，因为这只在初始化时调用一次）
         server_info = self._get_server_info() or {}
         
-        # 更新打印机状态
-        printer_state = self.update_printer_state()
+        # 当前打印机状态（从WebSocket更新的状态获取）
+        printer_state = {
+            'printer_state': self.printer_state,
+            'print_stats': self.print_stats,
+            'toolhead': self.toolhead_info,
+            'extruder': self.extruder_info
+        }
         
         # 组合状态信息
         status = {
