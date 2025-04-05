@@ -38,6 +38,12 @@ class KlipperMonitor:
         # 线程池
         self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="klipper_monitor_")
         
+        # 节流控制
+        self.last_ws_process_time = 0
+        self.ws_process_interval = 0.1  # 消息处理最小间隔(秒)
+        self.last_update_time = 0
+        self.status_update_interval = 0.5  # 状态更新最小间隔(秒)
+        
         # WebSocket相关
         self.ws = None
         self.ws_thread = None
@@ -76,7 +82,7 @@ class KlipperMonitor:
         self.runout_detection_enabled = False
         self.feed_requested = [False, False]  # 新增：补料请求状态（每个挤出机）
         self.feed_resume_pending = [False, False]  # 新增：等待恢复状态（每个挤出机）
-        self.active_extruder = 0  # 新增：当前活动的挤出机
+        self.active_extruder = None  # 新增：当前活动的挤出机
         
         # Gcode命令模板
         self.pause_cmd = "PAUSE"
@@ -155,7 +161,30 @@ class KlipperMonitor:
     def _on_ws_message(self, ws, message):
         """处理WebSocket接收到的消息"""
         try:
-            # 使用线程池处理消息，避免在WebSocket回调中阻塞
+            # 解析消息数据
+            data = json.loads(message)
+            
+            # 对于状态更新通知，需要快速处理
+            if 'method' in data and data['method'] == 'notify_status_update':
+                status_data = data['params'][0]
+                
+                # 检查是否包含打印状态变化，这类信息必须立即处理
+                if ('print_stats' in status_data and 'state' in status_data['print_stats']):
+                    # 立即提交到线程池处理
+                    self.thread_pool.submit(self._process_ws_message, message)
+                    return
+                    
+            # 使用节流机制，限制非关键消息处理频率
+            current_time = time.time()
+            time_since_last = current_time - self.last_ws_process_time
+            
+            if time_since_last < self.ws_process_interval:
+                # 如果距离上次处理时间太短，则跳过此消息
+                return
+                
+            self.last_ws_process_time = current_time
+                
+            # 使用线程池处理消息
             self.thread_pool.submit(self._process_ws_message, message)
         except Exception as e:
             self.logger.error(f"WebSocket消息处理时发生错误: {str(e)}")
@@ -179,50 +208,67 @@ class KlipperMonitor:
                     
                     old_active = self.active_extruder
                     
-                    # self.logger.debug(f"WebSocket通知：当前活跃挤出机名称 = {active_extruder_name}")
-                
-                # 更新状态数据
+                # 更新状态数据 - 每次消息都必须处理状态更新，不应节流
                 self._handle_status_update(status_data)
                 
-                # 检查断料状态
-                if self.runout_detection_enabled:
-                    self._check_filament_status()
-                    
-                # 更新活跃挤出机index
+                # 更新活跃挤出机index - 必须及时更新
                 active_extruder_name = self.toolhead_info.get('extruder', 'extruder')
                 if active_extruder_name == 'extruder':
                     self.active_extruder = 0
                 elif active_extruder_name == 'extruder1':
                     self.active_extruder = 1
                 
-                # 检查断料传感器状态
+                # self.logger.debug(f"更新活跃挤出机index: {self.active_extruder}")
+                
+                # 检查断料传感器状态 - 必须及时更新
                 for i, sensor_name in enumerate(self.filament_sensor_names):
                     if sensor_name and sensor_name in status_data:
                         sensor_data = status_data[sensor_name]
                         if 'filament_detected' in sensor_data:
                             self.filament_present[i] = sensor_data['filament_detected']
                 
-                # 调用状态回调函数
-                for callback in self.status_callbacks:
-                    try:
-                        callback(self.get_printer_status())
-                    except Exception as e:
-                        self.logger.error(f"执行状态回调时发生错误: {str(e)}")
+                current_state = self.printer_state
+                
+                # 检查断料状态 (只在暂停状态下减少检查频率)
+                if self.runout_detection_enabled:
+                    if current_state != "paused":
+                        self._check_filament_status() 
+                    elif not hasattr(self, '_last_paused_filament_check') or (time.time() - self._last_paused_filament_check > 5.0):
+                        self._check_filament_status()
+                        self._last_paused_filament_check = time.time()
+                
+                # 调用状态回调函数 (对于UI更新可以适当降低频率)
+                if not hasattr(self, '_last_callback_time') or time.time() - self._last_callback_time > 0.5:
+                    for callback in self.status_callbacks:
+                        try:
+                            callback(self.get_printer_status())
+                        except Exception as e:
+                            self.logger.error(f"执行状态回调时发生错误: {str(e)}")
+                    self._last_callback_time = time.time()
             
             # 处理对象查询响应
             elif 'result' in data and 'status' in data['result']:
                 status_data = data['result']['status']
+                # 查询响应必须立即处理
                 self._handle_status_update(status_data)
                 
-                # 同样处理断料检测和回调
+                # 同样减少暂停状态下的处理频率
+                current_state = self.printer_state
                 if self.runout_detection_enabled:
-                    self._check_filament_status()
-                    
-                for callback in self.status_callbacks:
-                    try:
-                        callback(self.get_printer_status())
-                    except Exception as e:
-                        self.logger.error(f"执行状态回调时发生错误: {str(e)}")
+                    if current_state != "paused":
+                        self._check_filament_status() 
+                    elif not hasattr(self, '_last_paused_filament_check') or (time.time() - self._last_paused_filament_check > 5.0):
+                        self._check_filament_status()
+                        self._last_paused_filament_check = time.time()
+                
+                # 减少回调频率
+                if not hasattr(self, '_last_callback_time') or time.time() - self._last_callback_time > 0.5:
+                    for callback in self.status_callbacks:
+                        try:
+                            callback(self.get_printer_status())
+                        except Exception as e:
+                            self.logger.error(f"执行状态回调时发生错误: {str(e)}")
+                    self._last_callback_time = time.time()
                 
         except Exception as e:
             self.logger.error(f"处理WebSocket消息时发生错误: {str(e)}")
@@ -271,6 +317,9 @@ class KlipperMonitor:
     
     def _handle_status_update(self, status):
         """处理状态更新数据"""
+        # 不应对状态更新进行节流，必须及时处理每一条状态更新
+        # 特别是打印状态变化信息
+        
         # 更新状态变量
         if 'print_stats' in status:
             self.print_stats = status['print_stats']
@@ -306,9 +355,10 @@ class KlipperMonitor:
                     self.filament_present[i] = sensor_data["filament_detected"]
                     self.logger.debug(f"断料传感器 {sensor_name} 状态: {'有料' if self.filament_present[i] else '无料'}")
         
-        # 检查断料状态
+        # 检查断料状态 - 只在非暂停状态下或者暂停状态下降低频率
         if self.runout_detection_enabled:
-            self._check_filament_status()
+            if self.printer_state != "paused":
+                self._check_filament_status()
         
         # 检查是否可以恢复打印
         # for extruder in range(2):  # 检查两个挤出机
@@ -550,6 +600,14 @@ class KlipperMonitor:
                 self.logger.error("WebSocket未连接，无法更新活跃挤出机")
                 return False
             
+            # 添加节流机制，避免短时间内频繁查询
+            current_time = time.time()
+            if hasattr(self, '_last_active_extruder_update') and (current_time - self._last_active_extruder_update) < 3.0:
+                self.logger.debug("活跃挤出机查询被节流，跳过")
+                return True
+                
+            self._last_active_extruder_update = current_time
+            
             # 查询打印机对象，获取toolhead的extruder字段
             # 根据API文档，toolhead.extruder字段包含当前活跃挤出机名称
             query_request = {
@@ -576,8 +634,6 @@ class KlipperMonitor:
     def _check_filament_status(self):
         """检查断料状态"""
         try:
-            # 先主动更新活跃挤出机信息
-            
             # 如果打印机处于打印状态，检查是否断料
             if self.printer_state == "printing":
                 return
@@ -591,7 +647,18 @@ class KlipperMonitor:
             
             # 如果打印机处于暂停状态，检查当前活跃挤出机是否缺料
             elif self.printer_state == "paused":
-                self._update_active_extruder()
+                if self.active_extruder is None:
+                    self._update_active_extruder()
+                    self.logger.debug(f"暂停状态下更新活跃挤出机: {self.active_extruder}")
+                # 记录上次检查暂停状态的时间戳，如果是第一次或者距离上次更新已经超过30秒，才更新活跃挤出机
+                # current_time = time.time()
+                # if not hasattr(self, '_last_paused_check_time') or (current_time - self._last_paused_check_time) > 30:
+                #     self._update_active_extruder()
+                #     self._last_paused_check_time = current_time
+                
+                if self.active_extruder is None:
+                    self.logger.warning("无法获取最后打印的挤出机，跳过检查")
+                    return
                 # 检查当前活跃挤出机是否缺料
                 if not self.filament_present[self.active_extruder] and not self.feed_requested[self.active_extruder]:
                     self.logger.info(f"检测到当前活跃挤出机 {self.active_extruder} 缺料，发送补料请求")
