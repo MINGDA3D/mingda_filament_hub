@@ -14,6 +14,7 @@ import time
 import threading
 from typing import Optional, Callable, Dict, List, Any, Union
 import queue
+from concurrent.futures import ThreadPoolExecutor
 
 class FeederCabinetCAN:
     """送料柜CAN通信类"""
@@ -60,6 +61,9 @@ class FeederCabinetCAN:
         self.bitrate = bitrate
         self.bus = None
         self.logger = logging.getLogger("feeder_cabinet.can")
+        
+        # 线程池
+        self.thread_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="can_comm_")
         
         # CAN消息ID定义
         self.SEND_ID = 0x10A       # 打印机 -> 送料柜
@@ -119,10 +123,9 @@ class FeederCabinetCAN:
             self.rx_thread = threading.Thread(target=self._receive_loop, daemon=True)
             self.rx_thread.start()
             
-            # 启动心跳线程
+            # 启动心跳任务 (使用线程池)
             self.heartbeat_running = True
-            self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
-            self.heartbeat_thread.start()
+            self.thread_pool.submit(self._heartbeat_loop)
             
             self.connected = True
             self.logger.info("CAN连接和握手完成")
@@ -140,8 +143,8 @@ class FeederCabinetCAN:
         if self.rx_thread and self.rx_thread.is_alive():
             self.rx_thread.join(timeout=1.0)
             
-        if self.heartbeat_thread and self.heartbeat_thread.is_alive():
-            self.heartbeat_thread.join(timeout=1.0)
+        # 关闭线程池（允许已提交任务完成）
+        self.thread_pool.shutdown(wait=False)
             
         if self.bus:
             try:
@@ -152,6 +155,9 @@ class FeederCabinetCAN:
             
         self.connected = False
         self.logger.info("已断开CAN总线连接")
+        
+        # 重新创建线程池，以便重新连接时使用
+        self.thread_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="can_comm_")
     
     def _perform_handshake(self) -> bool:
         """
@@ -213,9 +219,9 @@ class FeederCabinetCAN:
                         # 使用队列传递状态数据，避免阻塞接收线程
                         self.rx_queue.put(status_data)
                         
-                        # 如果有状态回调函数，在主线程中调用
+                        # 如果有状态回调函数，使用线程池调用
                         if self.status_callback:
-                            threading.Thread(target=self._process_status, args=(status_data,), daemon=True).start()
+                            self.thread_pool.submit(self._process_status, status_data)
             except Exception as e:
                 if self.rx_running:  # 只在非主动停止时记录错误
                     self.logger.error(f"接收消息时发生错误: {str(e)}")
@@ -224,7 +230,7 @@ class FeederCabinetCAN:
         self.logger.info("接收线程已结束")
     
     def _process_status(self, status_data: dict):
-        """处理状态数据的回调，在独立线程中运行"""
+        """处理状态数据的回调，在线程池中运行"""
         try:
             self.status_callback(status_data)
         except Exception as e:
@@ -365,4 +371,18 @@ class FeederCabinetCAN:
             return None
         except Exception as e:
             self.logger.error(f"获取状态时发生错误: {str(e)}")
-            return None 
+            return None
+    
+    def __del__(self):
+        """析构方法，确保资源被清理"""
+        try:
+            # 关闭线程池
+            if hasattr(self, 'thread_pool'):
+                self.thread_pool.shutdown(wait=False)
+                
+            # 关闭CAN总线
+            if hasattr(self, 'bus') and self.bus:
+                self.bus.shutdown()
+        except Exception as e:
+            # 析构方法中不应抛出异常
+            pass 

@@ -15,6 +15,7 @@ import json
 import requests
 import websocket
 from typing import Optional, Dict, Any, List, Callable
+from concurrent.futures import ThreadPoolExecutor
 
 from .can_communication import FeederCabinetCAN
 
@@ -33,6 +34,9 @@ class KlipperMonitor:
         self.can_comm = can_comm
         self.moonraker_url = moonraker_url
         self.ws_url = moonraker_url.replace("http://", "ws://") + "/websocket"
+        
+        # 线程池
+        self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="klipper_monitor_")
         
         # WebSocket相关
         self.ws = None
@@ -151,6 +155,14 @@ class KlipperMonitor:
     def _on_ws_message(self, ws, message):
         """处理WebSocket接收到的消息"""
         try:
+            # 使用线程池处理消息，避免在WebSocket回调中阻塞
+            self.thread_pool.submit(self._process_ws_message, message)
+        except Exception as e:
+            self.logger.error(f"WebSocket消息处理时发生错误: {str(e)}")
+    
+    def _process_ws_message(self, message):
+        """在线程池中处理WebSocket消息"""
+        try:
             data = json.loads(message)
             
             # 处理状态更新通知
@@ -168,48 +180,49 @@ class KlipperMonitor:
                     old_active = self.active_extruder
                     
                     # self.logger.debug(f"WebSocket通知：当前活跃挤出机名称 = {active_extruder_name}")
-                    
-                    # 更新活跃挤出机变量
-                    if active_extruder_name == 'extruder':
-                        self.active_extruder = 0
-                    elif active_extruder_name == 'extruder1':
-                        self.active_extruder = 1
-                        
-                    # 如果活跃挤出机发生变化，记录详细日志
-                    if old_active != self.active_extruder:
-                        self.logger.info(f"活跃挤出机从 {old_active} 变更为 {self.active_extruder}")
                 
-                # 处理常规状态更新
+                # 更新状态数据
                 self._handle_status_update(status_data)
+                
+                # 检查断料状态
+                if self.runout_detection_enabled:
+                    self._check_filament_status()
+                    
+                # 更新活跃挤出机index
+                active_extruder_name = self.toolhead_info.get('extruder', 'extruder')
+                if active_extruder_name == 'extruder':
+                    self.active_extruder = 0
+                elif active_extruder_name == 'extruder1':
+                    self.active_extruder = 1
+                
+                # 检查断料传感器状态
+                for i, sensor_name in enumerate(self.filament_sensor_names):
+                    if sensor_name and sensor_name in status_data:
+                        sensor_data = status_data[sensor_name]
+                        if 'filament_detected' in sensor_data:
+                            self.filament_present[i] = sensor_data['filament_detected']
+                
+                # 调用状态回调函数
+                for callback in self.status_callbacks:
+                    try:
+                        callback(self.get_printer_status())
+                    except Exception as e:
+                        self.logger.error(f"执行状态回调时发生错误: {str(e)}")
             
-            # 处理查询响应
-            elif 'result' in data and 'status' in data.get('result', {}):
-                status_data = data['result'].get('status', {})
-                
-                # 检查是否包含toolhead信息及extruder字段
-                if 'toolhead' in status_data and 'extruder' in status_data['toolhead']:
-                    active_extruder_name = status_data['toolhead']['extruder']
-                    # 更新toolhead_info中的extruder字段
-                    if 'toolhead' not in self.toolhead_info:
-                        self.toolhead_info = {}
-                    self.toolhead_info['extruder'] = active_extruder_name
-                    
-                    old_active = self.active_extruder
-                    
-                    # self.logger.debug(f"查询响应：当前活跃挤出机名称 = {active_extruder_name}")
-                    
-                    # 更新活跃挤出机变量
-                    if active_extruder_name == 'extruder':
-                        self.active_extruder = 0
-                    elif active_extruder_name == 'extruder1':
-                        self.active_extruder = 1
-                        
-                    # 如果活跃挤出机发生变化，记录详细日志
-                    if old_active != self.active_extruder:
-                        self.logger.info(f"活跃挤出机从 {old_active} 变更为 {self.active_extruder}")
-                
-                # 处理常规状态更新
+            # 处理对象查询响应
+            elif 'result' in data and 'status' in data['result']:
+                status_data = data['result']['status']
                 self._handle_status_update(status_data)
+                
+                # 同样处理断料检测和回调
+                if self.runout_detection_enabled:
+                    self._check_filament_status()
+                    
+                for callback in self.status_callbacks:
+                    try:
+                        callback(self.get_printer_status())
+                    except Exception as e:
+                        self.logger.error(f"执行状态回调时发生错误: {str(e)}")
                 
         except Exception as e:
             self.logger.error(f"处理WebSocket消息时发生错误: {str(e)}")
@@ -228,24 +241,20 @@ class KlipperMonitor:
             self._schedule_reconnect()
     
     def _schedule_reconnect(self):
-        """安排重连任务"""
-        if self.reconnect_thread and self.reconnect_thread.is_alive():
-            return  # 已经有一个重连线程在运行
-            
+        """安排重连尝试"""
         if self.reconnect_count >= self.max_reconnect_attempts:
-            self.logger.error(f"重连尝试达到最大次数 ({self.max_reconnect_attempts})，停止重连")
+            self.logger.error(f"已达到最大重连尝试次数 ({self.max_reconnect_attempts})，停止重连")
             return
             
         self.reconnect_count += 1
-        backoff_time = min(30, self.reconnect_interval * (2 ** (self.reconnect_count - 1)))  # 指数退避策略
+        
+        # 使用指数退避策略
+        backoff_time = min(30, self.reconnect_interval * (1.5 ** (self.reconnect_count - 1)))
         
         self.logger.info(f"计划在 {backoff_time} 秒后进行第 {self.reconnect_count} 次重连")
-        self.reconnect_thread = threading.Thread(
-            target=self._delayed_reconnect,
-            args=(backoff_time,),
-            daemon=True
-        )
-        self.reconnect_thread.start()
+        
+        # 使用线程池代替直接创建新线程
+        self.thread_pool.submit(self._delayed_reconnect, backoff_time)
     
     def _delayed_reconnect(self, delay):
         """延迟重连"""
@@ -258,7 +267,7 @@ class KlipperMonitor:
             self.logger.error("重连失败")
             # 如果仍启用自动重连，则安排下一次重连
             if self.auto_reconnect:
-                self._schedule_reconnect()
+                self._schedule_reconnect()  # 这里不再创建新线程，而是使用线程池
     
     def _handle_status_update(self, status):
         """处理状态更新数据"""
@@ -481,9 +490,15 @@ class KlipperMonitor:
             self.ws.close()
             self.logger.info("WebSocket连接已关闭")
         
+        # 关闭线程池
+        self.thread_pool.shutdown(wait=False)
+        
         # 等待重连线程结束
         if self.reconnect_thread and self.reconnect_thread.is_alive():
             self.reconnect_thread.join(timeout=1.0)
+            
+        # 重新创建线程池，以便重新连接时使用
+        self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="klipper_monitor_")
     
     def enable_auto_reconnect(self, enable=True, max_attempts=10, interval=5):
         """
@@ -870,3 +885,17 @@ class KlipperMonitor:
         }
         
         return status
+
+    def __del__(self):
+        """析构方法，确保资源被清理"""
+        try:
+            # 关闭线程池
+            if hasattr(self, 'thread_pool'):
+                self.thread_pool.shutdown(wait=False)
+                
+            # 关闭WebSocket连接
+            if hasattr(self, 'ws') and self.ws:
+                self.ws.close()
+        except Exception as e:
+            # 析构方法中不应抛出异常
+            pass
