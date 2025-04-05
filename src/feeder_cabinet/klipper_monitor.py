@@ -746,6 +746,12 @@ class KlipperMonitor:
         # self._update_active_extruder()
         self.logger.info(f"恢复打印前 - 当前活跃挤出机: {self.active_extruder} ({self.toolhead_info.get('extruder', '未知')})")
         
+        # 停止当前活跃挤出机的送料
+        if self.can_comm.stop_feed(extruder= 0 if self.active_extruder == 'extruder' else 1):
+            self.logger.info(f"已停止当前活跃挤出机的送料")
+        else:
+            self.logger.error(f"停止当前活跃挤出机的送料失败")
+
         # 确保发送正确的T命令选择活跃挤出机
         # self._send_gcode(f"T{self.active_extruder}")
         # self.logger.info(f"已发送命令选择挤出机 T{self.active_extruder}")

@@ -35,16 +35,18 @@ class FeederCabinetCAN:
     ERROR_COMMUNICATION = 0x06 # 通信错误
     
     # 命令类型定义
-    CMD_REQUEST_FEED = 0x01    # 请求送料
-    CMD_STOP_FEED = 0x02       # 停止送料
-    CMD_QUERY_STATUS = 0x03    # 查询状态
-    CMD_PRINTING = 0x04        # 打印中
-    CMD_PRINT_COMPLETE = 0x05  # 打印完成
-    CMD_PRINT_PAUSE = 0x06     # 打印暂停
-    CMD_PRINT_CANCEL = 0x07    # 打印取消 
-    CMD_PRINTER_IDLE = 0x08    # 打印机空闲
-    CMD_PRINTER_ERROR = 0x09   # 打印机错误
-    CMD_HEARTBEAT = 0x0A       # 心跳包
+    CMD_REQUEST_FEED           = 0x01       # 请求送料
+    CMD_STOP_FEED              = 0x02       # 停止送料
+    CMD_QUERY_STATUS           = 0x03       # 查询状态
+    CMD_PRINTING               = 0x04       # 打印中
+    CMD_PRINT_COMPLETE         = 0x05       # 打印完成
+    CMD_PRINT_PAUSE            = 0x06       # 打印暂停
+    CMD_PRINT_CANCEL           = 0x07       # 打印取消 
+    CMD_PRINTER_IDLE           = 0x08       # 打印机空闲
+    CMD_PRINTER_ERROR          = 0x09       # 打印机错误
+    CMD_HEARTBEAT              = 0x0A       # 心跳包
+    CMD_LOAD_FILAMENT          = 0x0B       # 进料
+    CMD_UNLOAD_FILAMENT        = 0x0C       # 退料
     
     def __init__(self, interface: str = 'can0', bitrate: int = 1000000):
         """
