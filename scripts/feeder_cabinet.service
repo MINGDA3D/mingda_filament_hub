@@ -1,13 +1,13 @@
 [Unit]
-Description=送料柜自动续料系统
+Description=feeder cabinet auto feed system
 After=network.target
 After=klipper.service
 After=moonraker.service
 
 [Service]
 Type=simple
-User=root
-ExecStart=/usr/bin/python3 /opt/feeder_cabinet/src/feeder_cabinet/main.py -c /etc/feeder_cabinet/config.yaml
+User=mingda
+ExecStart=/home/mingda/feeder_cabinet_venv/bin/python /home/mingda/feeder_cabinet_help/src/feeder_cabinet/main.py -c /home/mingda/printer_data/config/config.yaml
 Restart=always
 RestartSec=5s
 
