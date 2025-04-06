@@ -235,6 +235,16 @@ class FeederCabinetCAN:
             self.status_callback(status_data)
         except Exception as e:
             self.logger.error(f"处理状态回调时发生错误: {str(e)}")
+
+    def _process_receive_message(self, status_data: dict):
+        """处理接收到的消息"""
+        status_code = status_data.get('status')
+        error_code = status_data.get('error_code')
+
+        if status_code == self.STATUS_COMPLETE:
+            self.logger.info("送料完成")
+        elif status_code == self.STATUS_ERROR:
+            self.logger.error(f"送料柜错误: {error_code}")
     
     def _heartbeat_loop(self):
         """心跳消息循环，在独立线程中运行"""
