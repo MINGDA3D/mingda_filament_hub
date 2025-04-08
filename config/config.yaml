@@ -17,6 +17,20 @@ klipper:
   # 值越小响应越快，但会增加系统负载
   update_interval: 5.0
 
+# 挤出机配置
+extruders:
+  # 挤出机数量
+  count: 2
+  
+  # 默认活跃挤出机（0=左，1=右）
+  active: 0
+  
+  # 左右喷头对应的送料柜缓冲区
+  left:
+    buffer: 0  # 左喷头对应的送料柜缓冲区编号
+  right:
+    buffer: 1  # 右喷头对应的送料柜缓冲区编号
+
 # 断料检测配置
 filament_runout:
   # 是否启用断料检测

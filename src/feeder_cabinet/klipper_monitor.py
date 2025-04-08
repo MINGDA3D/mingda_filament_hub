@@ -22,13 +22,14 @@ from .can_communication import FeederCabinetCAN
 class KlipperMonitor:
     """Klipper监控类，负责与Klipper通信并获取状态"""
     
-    def __init__(self, can_comm, moonraker_url: str = "http://localhost:7125"):
+    def __init__(self, can_comm, moonraker_url: str = "http://localhost:7125", extruder_config: Dict = None):
         """
         初始化Klipper监控器
         
         Args:
             can_comm: CAN通信实例
             moonraker_url: Moonraker API URL
+            extruder_config: 挤出机配置
         """
         self.logger = logging.getLogger("feeder_cabinet.klipper")
         self.can_comm = can_comm
@@ -85,6 +86,20 @@ class KlipperMonitor:
         self.feed_requested = [False, False]  # 新增：补料请求状态（每个挤出机）
         self.feed_resume_pending = [False, False]  # 新增：等待恢复状态（每个挤出机）
         self.active_extruder = None  # 新增：当前活动的挤出机
+        
+        # 挤出机配置
+        self.extruder_config = extruder_config or {
+            'count': 2,
+            'active': 0,
+            'left': {'buffer': 0},
+            'right': {'buffer': 1}
+        }
+        
+        # 喷头到缓冲区的映射
+        self.extruder_to_buffer = {
+            0: self.extruder_config['left']['buffer'],  # 左喷头对应的缓冲区
+            1: self.extruder_config['right']['buffer']  # 右喷头对应的缓冲区
+        }
         
         # Gcode命令模板
         self.pause_cmd = "PAUSE"
@@ -691,11 +706,9 @@ class KlipperMonitor:
         """
         self.logger.info(f"处理挤出机 {extruder} 断料事件开始")
         
-        # 获取并记录当前活跃挤出机
-        # self._update_active_extruder()
-        # active_extruder_name = self.toolhead_info.get('extruder', '未知')
-        # self.logger.info(f"断料处理 - 当前活跃挤出机: {self.active_extruder} ({active_extruder_name})")
-        # self.logger.info(f"断料处理 - 断料的挤出机: {extruder}")
+        # 获取对应的缓冲区编号
+        buffer = self.extruder_to_buffer.get(extruder, extruder)
+        self.logger.info(f"挤出机 {extruder} 对应的送料柜缓冲区: {buffer}")
         
         # 步骤1: 暂停打印（Klipper会自动处理）
 
@@ -703,13 +716,9 @@ class KlipperMonitor:
         self.logger.info("打印状态已保存")
         
         # 步骤3: 发送补料请求到送料柜
-        self.logger.info(f"发送补料请求到送料柜，挤出机 {extruder}")
+        self.logger.info(f"发送补料请求到送料柜，挤出机 {extruder}，缓冲区 {buffer}")
         
-        # 再次检查当前活跃挤出机
-        # self._update_active_extruder()
-        # self.logger.info(f"发送补料请求前 - 当前活跃挤出机: {self.active_extruder}")
-        
-        if self.can_comm.request_feed(extruder=extruder):
+        if self.can_comm.request_feed(extruder=buffer):
             self.feed_requested[extruder] = True
             self.feed_resume_pending[extruder] = True
             self.logger.info(f"已发送挤出机 {extruder} 补料请求")
@@ -720,7 +729,7 @@ class KlipperMonitor:
             for i in range(retry_count):
                 self.logger.info(f"尝试重新发送挤出机 {extruder} 补料请求 ({i+1}/{retry_count})")
                 time.sleep(1)
-                if self.can_comm.request_feed(extruder=extruder):
+                if self.can_comm.request_feed(extruder=buffer):
                     self.feed_requested[extruder] = True
                     self.feed_resume_pending[extruder] = True
                     self.logger.info(f"重新发送挤出机 {extruder} 补料请求成功")
@@ -884,8 +893,10 @@ class KlipperMonitor:
         for i in range(2):
             self.feed_requested[i] = False
             self.feed_resume_pending[i] = False
+            # 获取对应的缓冲区编号
+            buffer = self.extruder_to_buffer.get(i, i)
             # 通知送料柜停止送料
-            self.can_comm.stop_feed(extruder=i)
+            self.can_comm.stop_feed(extruder=buffer)
             
         result = self._send_gcode(self.cancel_cmd)
         if result:

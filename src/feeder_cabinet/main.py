@@ -19,6 +19,7 @@ import json
 import yaml
 from typing import Dict, Any, Optional
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
 from .can_communication import FeederCabinetCAN
 from .klipper_monitor import KlipperMonitor
@@ -59,6 +60,9 @@ class FeederCabinetApp:
         # 运行状态
         self.running = False
         self.main_thread = None
+        
+        # 线程池
+        self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="feeder_cabinet_")
     
     def _setup_logging(self, logger_name: str, log_level: str) -> logging.Logger:
         """
@@ -234,7 +238,8 @@ class FeederCabinetApp:
             self.logger.info(f"初始化Klipper监控器，Moonraker URL: {klipper_config['moonraker_url']}")
             self.klipper_monitor = KlipperMonitor(
                 can_comm=self.can_comm,
-                moonraker_url=klipper_config['moonraker_url']
+                moonraker_url=klipper_config['moonraker_url'],
+                extruder_config=self.config.get('extruders', None)
             )
             
             # 设置默认活跃挤出机
