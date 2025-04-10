@@ -21,8 +21,8 @@ from typing import Dict, Any, Optional
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-from .can_communication import FeederCabinetCAN
-from .klipper_monitor import KlipperMonitor
+from feeder_cabinet.can_communication import FeederCabinetCAN
+from feeder_cabinet.klipper_monitor import KlipperMonitor
 
 # 配置默认参数
 DEFAULT_CONFIG_PATH = "/home/mingda/feeder_cabinet_help/config/config.yaml"

@@ -838,7 +838,8 @@ class KlipperMonitor:
         self.logger.info(f"恢复打印前 - 当前活跃挤出机: {self.active_extruder} ({self.toolhead_info.get('extruder', '未知')})")
         
         # 停止当前活跃挤出机的送料
-        if self.can_comm.stop_feed(extruder=self.active_extruder):
+        buffer = self.extruder_to_buffer.get(self.active_extruder, self.active_extruder)
+        if self.can_comm.stop_feed(extruder=buffer):
             self.logger.info(f"已停止当前活跃挤出机的送料")
         else:
             self.logger.error(f"停止当前活跃挤出机的送料失败")
@@ -874,7 +875,7 @@ class KlipperMonitor:
             
             # 操作完成后进行少量挤出，确保耗材正常
             self._send_gcode("G91")  # 设置为相对坐标
-            self._send_gcode("G1 E10 F100")  # 慢速挤出10mm
+            self._send_gcode("G1 E10 F150")  # 慢速挤出10mm
             self._send_gcode("G90")  # 恢复为绝对坐标
             
         except Exception as e:

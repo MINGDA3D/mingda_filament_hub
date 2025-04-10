@@ -7,7 +7,7 @@ After=moonraker.service
 [Service]
 Type=simple
 User=mingda
-ExecStart=/home/mingda/feeder_cabinet_venv/bin/python /home/mingda/feeder_cabinet_help/src/feeder_cabinet/main.py -c /home/mingda/printer_data/config/config.yaml
+ExecStart=/home/mingda/feeder_cabinet_venv/bin/feeder_cabinet -c /home/mingda/printer_data/config/config.yaml
 Restart=always
 RestartSec=5s
 
