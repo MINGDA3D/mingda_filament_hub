@@ -266,7 +266,7 @@ class FeederCabinetCAN:
         while self.heartbeat_running and self.connected:
             try:
                 self.send_message(self.CMD_HEARTBEAT)
-                time.sleep(30)  # 每30秒发送一次心跳
+                time.sleep(5)  # 每30秒发送一次心跳
             except Exception as e:
                 if self.heartbeat_running:  # 只在非主动停止时记录错误
                     self.logger.error(f"发送心跳消息时发生错误: {str(e)}")
