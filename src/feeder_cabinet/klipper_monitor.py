@@ -80,6 +80,7 @@ class KlipperMonitor:
         self.filament_present = [True, True]  # 新增：两个挤出机的断料状态
         self.filament_sensor_pins = [None, None]  # 新增：两个断料传感器引脚
         self.filament_sensor_names = ["Filament_Sensor0", "Filament_Sensor1"]  # 新增：传感器名称
+        self.filament_sensors_status: Dict[str, bool] = {} # 新增：传感器名称到状态的映射
         # 断料传感器对象名称（订阅和状态处理使用）
         self.filament_sensor_objects = ["filament_switch_sensor Filament_Sensor0", "filament_switch_sensor Filament_Sensor1"]
         self.runout_detection_enabled = False
@@ -235,16 +236,6 @@ class KlipperMonitor:
                 elif active_extruder_name == 'extruder1':
                     self.active_extruder = 1
                 
-                # 检查断料传感器状态 - 直接从status_data中提取
-                for i, sensor_obj in enumerate(self.filament_sensor_objects):
-                    if sensor_obj in status_data:
-                        sensor_data = status_data[sensor_obj]
-                        if 'filament_detected' in sensor_data:
-                            old_state = self.filament_present[i]
-                            self.filament_present[i] = sensor_data['filament_detected']
-                            if old_state != self.filament_present[i]:
-                                self.logger.info(f"断料传感器 {self.filament_sensor_names[i]} 状态变化: {'有料' if self.filament_present[i] else '无料'}")
-                
                 current_state = self.printer_state
                 
                 # 检查断料状态 (只在暂停状态下减少检查频率)
@@ -369,11 +360,18 @@ class KlipperMonitor:
             if sensor_obj in status:
                 sensor_data = status[sensor_obj]
                 if "filament_detected" in sensor_data:
-                    old_state = self.filament_present[i]
-                    self.filament_present[i] = sensor_data["filament_detected"]
-                    self.logger.info(f"断料传感器 {self.filament_sensor_names[i]} 状态: {'有料' if self.filament_present[i] else '无料'}")
-                    if old_state != self.filament_present[i]:
-                        self.logger.info(f"断料传感器 {self.filament_sensor_names[i]} 状态: {'有料' if self.filament_present[i] else '无料'}")
+                    sensor_name = self.filament_sensor_names[i]
+                    new_state = sensor_data["filament_detected"]
+                    
+                    # 检查状态是否真的发生变化
+                    old_state = self.filament_sensors_status.get(sensor_name, None)
+                    
+                    # 更新两个状态变量
+                    self.filament_present[i] = new_state
+                    self.filament_sensors_status[sensor_name] = new_state
+
+                    if old_state != new_state:
+                        self.logger.info(f"断料传感器 {sensor_name} 状态变化: {'有料' if new_state else '无料'}")
         
         # 检查断料状态 - 只在非暂停状态下或者暂停状态下降低频率
         if self.runout_detection_enabled:
@@ -388,7 +386,8 @@ class KlipperMonitor:
             'extruder': self.extruder_info,
             'extruder1': self.extruder1_info,
             'active_extruder': self.active_extruder,
-            'filament_present': self.filament_present
+            'filament_present': self.filament_present,
+            'filament_sensors_status': self.filament_sensors_status
         }
         
         for callback in self.status_callbacks:
@@ -530,7 +529,8 @@ class KlipperMonitor:
                 'extruder': self.extruder_info,
                 'extruder1': self.extruder1_info,
                 'active_extruder': self.active_extruder,
-                'filament_present': self.filament_present
+                'filament_present': self.filament_present,
+                'filament_sensors_status': self.filament_sensors_status
             }
             
             return state_info
@@ -954,7 +954,8 @@ class KlipperMonitor:
             'extruder': self.extruder_info,
             'extruder1': self.extruder1_info,
             'active_extruder': self.active_extruder,
-            'filament_present': self.filament_present
+            'filament_present': self.filament_present,
+            'filament_sensors_status': self.filament_sensors_status
         }
         
         # 组合状态信息

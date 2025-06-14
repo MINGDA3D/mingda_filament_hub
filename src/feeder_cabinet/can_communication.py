@@ -48,6 +48,8 @@ class FeederCabinetCAN:
     CMD_HEARTBEAT              = 0x0A       # 心跳包
     CMD_LOAD_FILAMENT          = 0x0B       # 进料
     CMD_UNLOAD_FILAMENT        = 0x0C       # 退料
+    CMD_QUERY_PRINTER_FILAMENT_STATUS  = 0x0D       # 送料柜查询左右缓冲区对应打印机挤出机余料状态
+    CMD_PRINTER_FILAMENT_STATUS_RESPONSE = 0x0E    # 送料柜左右缓冲区对应打印机挤出机余料状态响应
     
     def __init__(self, interface: str = 'can0', bitrate: int = 1000000):
         """
@@ -79,6 +81,7 @@ class FeederCabinetCAN:
         self.connected = False
         self.seq_number = 0  # 消息序列号
         self.status_callback = None  # 状态回调函数
+        self.query_callback = None   # 查询回调函数
         
         # 接收消息线程
         self.rx_thread = None
@@ -208,8 +211,18 @@ class FeederCabinetCAN:
                 if msg and msg.arbitration_id == self.RECEIVE_ID:
                     self.logger.debug(f"收到消息: ID=0x{msg.arbitration_id:03X}, 数据={[hex(x) for x in msg.data]}")
                     
-                    # 解析状态消息
-                    if len(msg.data) >= 3:
+                    if not msg.data:
+                        self.logger.warning("收到空数据帧")
+                        continue
+
+                    command = msg.data[0]
+
+                    # 检查是否为送料柜状态查询命令
+                    if command == self.CMD_QUERY_PRINTER_FILAMENT_STATUS:
+                        if self.query_callback:
+                            self.thread_pool.submit(self.query_callback)
+                    # 否则，按原有的状态消息处理
+                    elif len(msg.data) >= 3:
                         status_data = {
                             'status': msg.data[0],    # 状态码
                             'progress': msg.data[1],  # 进度 (0-100)
@@ -275,6 +288,15 @@ class FeederCabinetCAN:
             callback: 状态回调函数，接收一个状态数据字典
         """
         self.status_callback = callback
+    
+    def set_query_callback(self, callback: Callable):
+        """
+        设置查询回调函数
+        
+        Args:
+            callback: 查询回调函数，无参数
+        """
+        self.query_callback = callback
     
     def send_message(self, cmd_type: int, extruder: int = 0) -> bool:
         """
@@ -382,6 +404,41 @@ class FeederCabinetCAN:
         except Exception as e:
             self.logger.error(f"获取状态时发生错误: {str(e)}")
             return None
+    
+    def send_filament_status_response(self, is_valid: bool, status_bitmap: int) -> bool:
+        """
+        发送挤出机余料状态响应
+        
+        Args:
+            is_valid (bool): 数据是否有效
+            status_bitmap (int): 挤出机状态位图
+            
+        Returns:
+            bool: 发送是否成功
+        """
+        if not self.connected or not self.bus:
+            self.logger.error("未连接到CAN总线，无法发送消息")
+            return False
+            
+        try:
+            validity_byte = 0x00 if is_valid else 0x01
+            data = [self.CMD_PRINTER_FILAMENT_STATUS_RESPONSE, validity_byte, status_bitmap]
+            
+            msg = can.Message(
+                arbitration_id=self.SEND_ID,
+                data=data,
+                is_extended_id=False
+            )
+            
+            with self.send_lock:
+                self.bus.send(msg)
+                
+            self.logger.info(f"已发送挤出机余料状态响应: ID=0x{self.SEND_ID:03X}, 数据={[hex(x) for x in data]}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"发送挤出机余料状态响应失败: {str(e)}")
+            return False
     
     def __del__(self):
         """析构方法，确保资源被清理"""

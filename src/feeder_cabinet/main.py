@@ -144,7 +144,17 @@ class FeederCabinetApp:
             },
             'extruders': {
                 'count': 2,  # 默认支持双挤出机
-                'active': 0  # 默认活动挤出机
+                'active': 0,  # 默认活动挤出机
+                # 喷头到送料柜缓冲区的映射
+                # 格式: extruder_index: buffer_index
+                # 示例 (左喷头 -> 右缓冲区, 右喷头 -> 左缓冲区):
+                # mapping:
+                #   0: 1
+                #   1: 0
+                'mapping': {
+                    0: 0,
+                    1: 1
+                }
             }
         }
         
@@ -186,6 +196,58 @@ class FeederCabinetApp:
                 self._update_config(config[key], value)
             else:
                 config[key] = value
+    
+    def _handle_filament_status_query(self):
+        """处理送料柜的挤出机余料状态查询请求。"""
+        self.logger.info("收到挤出机余料状态查询请求")
+
+        if not self.klipper_monitor:
+            self.logger.error("KlipperMonitor 未初始化，无法查询状态")
+            if self.can_comm:
+                self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
+            return
+
+        if not hasattr(self.klipper_monitor, 'filament_sensors_status'):
+            self.logger.error("KlipperMonitor 中缺少 'filament_sensors_status' 属性，无法获取状态")
+            if self.can_comm:
+                self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
+            return
+        
+        sensor_states = self.klipper_monitor.filament_sensors_status
+        sensors_config = self.config.get('filament_runout', {}).get('sensors', [])
+        extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
+        
+        status_bitmap = 0
+        is_valid = True
+        
+        try:
+            # 根据挤出机到缓冲区的映射构建位图
+            for sensor_info in sensors_config:
+                sensor_name = sensor_info.get('name')
+                extruder_index = sensor_info.get('extruder')
+
+                if sensor_name is None or extruder_index is None:
+                    continue
+                
+                # 获取传感器状态
+                has_filament = sensor_states.get(sensor_name, False)
+                
+                if has_filament:
+                    # 从映射中查找此挤出机对应的缓冲区
+                    buffer_index = extruder_mapping.get(extruder_index)
+                    if buffer_index is not None:
+                        status_bitmap |= (1 << buffer_index)
+                    else:
+                        self.logger.warning(f"在配置中找不到挤出机 {extruder_index} 到缓冲区的映射")
+
+            self.logger.info(f"查询到耗材状态，准备发送响应。Mapping: {extruder_mapping}, Bitmap: {bin(status_bitmap)}")
+            if self.can_comm:
+                self.can_comm.send_filament_status_response(is_valid=is_valid, status_bitmap=status_bitmap)
+
+        except Exception as e:
+            self.logger.error(f"处理耗材状态查询时出错: {e}", exc_info=True)
+            if self.can_comm:
+                self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
     
     def _setup_file_logging(self):
         """设置文件日志"""
@@ -232,6 +294,7 @@ class FeederCabinetApp:
                 interface=can_config['interface'],
                 bitrate=can_config['bitrate']
             )
+            self.can_comm.set_query_callback(self._handle_filament_status_query)
             
             # 初始化Klipper监控器
             klipper_config = self.config['klipper']

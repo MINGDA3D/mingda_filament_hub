@@ -143,6 +143,38 @@ feeder_cabinet -v
 G-code控制台> START_FEEDER_CABINET EXTRUDER=0 FORCE=1
 ```
 
+## 通信协议
+
+本节定义了送料柜与打印机（通过`feeder_cabinet`服务）之间的CAN通信协议。
+
+### 查询挤出机余料状态
+
+此命令用于送料柜查询打印机左右挤出机是否有料。
+
+*   **请求 (送料柜 -> 打印机)**
+    *   **命令**: `QUERY_PRINTER_FILAMENT_STATUS` 0x0D
+    *   **CAN ID**: `0x10B` (示例ID, 可配置)
+    *   **数据 (Payload)**: (1字节)。该命令查询所有配置的挤出机状态。
+    *   **示例**: 10B#0D
+
+*   **响应 (打印机 -> 送料柜)**
+    *   **命令**: `PRINTER_FILAMENT_STATUS_RESPONSE` 0x0E
+    *   **CAN ID**: `0x10A` (示例ID, 可配置)
+    *   **数据 (Payload)**: (3字节) 命令号+有效位+状态数据
+        *   `有效位`: 数据有效：0x00，数据无效：0x01。   
+        *   `状态数据`: 挤出机状态。每一位对应一个挤出机是否有料。
+            *   Bit 0: 送料柜左缓冲区对应的挤出机 (Extruder 0或者Extruder1，须看config.yaml如何设置) 状态 (1: 有料, 0: 无料)
+            *   Bit 1: 送料柜右缓冲区对应的挤出机 (Extruder 0或者Extruder 1，须看config.yaml如何设置) 状态 (1: 有料, 0: 无料)
+        *   **示例**: 10A#0E0001
+
+**实现说明:**
+
+1.  送料柜控制器发送CAN ID为 `0x10B` 的消息来发起查询。
+2.  运行在打印机主机上的 `feeder_cabinet` 服务通过 `can_communication.py` 模块监听此ID。
+3.  收到查询后，服务通过 `klipper_monitor.py` 模块向Moonraker API请求断料传感器的状态。
+4.  服务根据Klipper返回的状态构建响应数据包。
+5.  服务通过 `can_communication.py` 模块发送ID为 `0x10A` 的响应消息给送料柜。
+
 ## 配置选项
 
 配置文件（`config.yaml`）包含以下主要选项：
