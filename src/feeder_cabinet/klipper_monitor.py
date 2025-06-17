@@ -51,7 +51,6 @@ class KlipperMonitor:
         self.ws_connected = False
         self.next_request_id = 1
         self.reconnect_count = 0
-        self.max_reconnect_attempts = 10
         self.reconnect_interval = 5
         self.auto_reconnect = True
         self.reconnect_thread = None
@@ -275,16 +274,15 @@ class KlipperMonitor:
     
     def _schedule_reconnect(self):
         """安排重连尝试"""
-        if self.reconnect_count >= self.max_reconnect_attempts:
-            self.logger.error(f"已达到最大重连尝试次数 ({self.max_reconnect_attempts})，停止重连")
+        if not self.auto_reconnect:
             return
             
         self.reconnect_count += 1
         
-        # 使用指数退避策略
-        backoff_time = min(30, self.reconnect_interval * (1.5 ** (self.reconnect_count - 1)))
+        # 使用固定的重连间隔
+        backoff_time = self.reconnect_interval
         
-        self.logger.info(f"计划在 {backoff_time} 秒后进行第 {self.reconnect_count} 次重连")
+        self.logger.info(f"计划在 {backoff_time} 秒后进行第 {self.reconnect_count} 次重连...")
         
         # 使用线程池代替直接创建新线程
         self.thread_pool.submit(self._delayed_reconnect, backoff_time)
@@ -554,19 +552,17 @@ class KlipperMonitor:
         # 重新创建线程池，以便重新连接时使用
         self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="klipper_monitor_")
     
-    def enable_auto_reconnect(self, enable=True, max_attempts=10, interval=5):
+    def enable_auto_reconnect(self, enable=True, interval=5):
         """
         启用或禁用自动重连
         
         Args:
             enable: 是否启用自动重连
-            max_attempts: 最大重连尝试次数
-            interval: 初始重连间隔（秒）
+            interval: 重连间隔（秒）
         """
         self.auto_reconnect = enable
-        self.max_reconnect_attempts = max_attempts
         self.reconnect_interval = interval
-        self.logger.info(f"自动重连{'启用' if enable else '禁用'}, 最大尝试次数: {max_attempts}, 初始间隔: {interval}秒")
+        self.logger.info(f"自动重连{'启用' if enable else '禁用'}, 重连间隔: {interval}秒")
     
     def enable_filament_runout_detection(self, sensor_pins=None):
         """

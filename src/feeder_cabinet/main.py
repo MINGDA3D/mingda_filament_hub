@@ -341,7 +341,6 @@ class FeederCabinetApp:
                 # 配置自动重连
                 self.klipper_monitor.enable_auto_reconnect(
                     enable=True,
-                    max_attempts=10,
                     interval=5
                 )
             
