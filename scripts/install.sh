@@ -52,7 +52,7 @@ mkdir -p "$LOG_DIR"
 # 复制配置文件（如果不存在）
 if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
   echo "正在创建默认配置文件..."
-  cp "$PROJECT_DIR/config/config.yaml.example" "$CONFIG_DIR/config.yaml"
+  cp "$PROJECT_DIR/config/config.yaml" "$CONFIG_DIR/config.yaml"
 else
   echo "配置文件已存在，跳过..."
 fi

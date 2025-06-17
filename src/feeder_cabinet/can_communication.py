@@ -266,7 +266,7 @@ class FeederCabinetCAN:
         while self.heartbeat_running and self.connected:
             try:
                 self.send_message(self.CMD_HEARTBEAT)
-                time.sleep(5)  # 每30秒发送一次心跳
+                time.sleep(5)  # 每5秒发送一次心跳
             except Exception as e:
                 if self.heartbeat_running:  # 只在非主动停止时记录错误
                     self.logger.error(f"发送心跳消息时发生错误: {str(e)}")
@@ -298,6 +298,40 @@ class FeederCabinetCAN:
         """
         self.query_callback = callback
     
+    def _send_with_retry(self, msg: can.Message, retries: int = 3, retry_delay: float = 0.05) -> bool:
+        """
+        发送CAN消息，并在缓冲区满时自动重试。
+
+        Args:
+            msg: 要发送的can.Message对象
+            retries: 最大重试次数
+            retry_delay: 每次重试之间的延迟（秒）
+
+        Returns:
+            bool: 发送是否成功
+        """
+        # send_lock应该在此方法之外由调用者管理，以确保消息发送的原子性
+        with self.send_lock:
+            for attempt in range(retries):
+                try:
+                    self.bus.send(msg, timeout=0.1) # 使用一个短超时
+                    return True
+                except can.CanError as e:
+                    # 兼容大小写
+                    if "transmit buffer full" in str(e).lower():
+                        if attempt < retries - 1:
+                            self.logger.warning(f"CAN发送缓冲区已满，将在{retry_delay * 1000}ms后重试... (尝试 {attempt + 1}/{retries})")
+                            time.sleep(retry_delay)
+                        else:
+                            # 最后一次重试失败
+                            self.logger.error(f"发送消息失败，重试{retries}次后CAN发送缓冲区仍然已满: {e}")
+                            return False
+                    else:
+                        # 对于其他类型的CAN错误，立即失败
+                        self.logger.error(f"发送消息时发生未知CAN错误: {e}")
+                        return False
+        return False
+
     def send_message(self, cmd_type: int, extruder: int = 0) -> bool:
         """
         发送通用消息
@@ -325,14 +359,15 @@ class FeederCabinetCAN:
                 is_extended_id=False
             )
             
-            with self.send_lock:
-                self.bus.send(msg)
-                
-            self.logger.debug(f"已发送消息: ID=0x{self.SEND_ID:03X}, 命令={hex(cmd_type)}, 序列号={seq}")
-            return True
+            if self._send_with_retry(msg):
+                self.logger.debug(f"已发送消息: ID=0x{self.SEND_ID:03X}, 命令={hex(cmd_type)}, 序列号={seq}")
+                return True
+            else:
+                # 错误已在 _send_with_retry 中记录
+                return False
             
         except Exception as e:
-            self.logger.error(f"发送消息失败: {str(e)}")
+            self.logger.error(f"构建或发送消息时发生未知错误: {str(e)}")
             return False
     
     def request_feed(self, extruder: int = 0) -> bool:
@@ -429,15 +464,15 @@ class FeederCabinetCAN:
                 data=data,
                 is_extended_id=False
             )
-            
-            with self.send_lock:
-                self.bus.send(msg)
-                
-            self.logger.info(f"已发送挤出机余料状态响应: ID=0x{self.SEND_ID:03X}, 数据={[hex(x) for x in data]}")
-            return True
+
+            if self._send_with_retry(msg):
+                self.logger.info(f"已发送挤出机余料状态响应: ID=0x{self.SEND_ID:03X}, 数据={[hex(x) for x in data]}")
+                return True
+            else:
+                return False
             
         except Exception as e:
-            self.logger.error(f"发送挤出机余料状态响应失败: {str(e)}")
+            self.logger.error(f"构建或发送挤出机余料状态响应时失败: {str(e)}")
             return False
     
     def __del__(self):
