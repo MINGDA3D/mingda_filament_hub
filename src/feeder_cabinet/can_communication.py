@@ -94,6 +94,11 @@ class FeederCabinetCAN:
         
         # 锁，用于线程同步
         self.send_lock = threading.Lock()
+        
+        # 自动重连
+        self.auto_reconnect = True
+        self.reconnect_interval = 5  # seconds
+        self.reconnect_lock = threading.Lock()
     
     def connect(self) -> bool:
         """
@@ -135,19 +140,22 @@ class FeederCabinetCAN:
             return True
         except Exception as e:
             self.logger.error(f"连接CAN总线失败: {str(e)}")
-            self.disconnect()
+            if self.bus:
+                try:
+                    self.bus.shutdown()
+                except Exception:
+                    pass
+                self.bus = None
             return False
     
     def disconnect(self):
         """断开CAN总线连接"""
+        self.connected = False
         self.rx_running = False
         self.heartbeat_running = False
         
         if self.rx_thread and self.rx_thread.is_alive():
             self.rx_thread.join(timeout=1.0)
-            
-        # 关闭线程池（允许已提交任务完成）
-        self.thread_pool.shutdown(wait=False)
             
         if self.bus:
             try:
@@ -156,12 +164,36 @@ class FeederCabinetCAN:
                 self.logger.error(f"关闭CAN总线时发生错误: {str(e)}")
             self.bus = None
             
-        self.connected = False
         self.logger.info("已断开CAN总线连接")
-        
-        # 重新创建线程池，以便重新连接时使用
-        self.thread_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="can_comm_")
     
+    def reconnect(self):
+        """断开并重新连接CAN总线"""
+        if not self.auto_reconnect:
+            self.logger.warning("自动重连已禁用，跳过重连过程。")
+            return
+
+        # 使用锁确保只有一个线程在执行重连
+        if not self.reconnect_lock.acquire(blocking=False):
+            self.logger.info("重连已在进行中，跳过此次请求。")
+            return
+        
+        try:
+            self.logger.info("开始CAN总线重连过程...")
+            
+            # 首先断开现有连接
+            self.disconnect()
+            
+            # 循环尝试直到重连成功
+            while self.auto_reconnect:
+                if self.connect():
+                    self.logger.info("CAN总线重连成功！")
+                    return
+                else:
+                    self.logger.warning(f"重连失败，将在 {self.reconnect_interval} 秒后重试。")
+                    time.sleep(self.reconnect_interval)
+        finally:
+            self.reconnect_lock.release()
+
     def _perform_handshake(self) -> bool:
         """
         执行握手过程
@@ -197,6 +229,9 @@ class FeederCabinetCAN:
             self.logger.error("握手超时")
             return False
             
+        except can.CanError as e:
+            self.logger.error(f"握手过程中发生CAN错误: {e}")
+            return False
         except Exception as e:
             self.logger.error(f"握手过程发生错误: {str(e)}")
             return False
@@ -235,9 +270,19 @@ class FeederCabinetCAN:
                         # 如果有状态回调函数，使用线程池调用
                         if self.status_callback:
                             self.thread_pool.submit(self._process_status, status_data)
+            except can.CanError as e:
+                if self.rx_running:
+                    self.logger.error(f"接收消息时发生CAN错误: {e}")
+                    self.connected = False
+                    self.thread_pool.submit(self.reconnect)
+                    # 等待一段时间以避免在重连期间CPU空转
+                    time.sleep(self.reconnect_interval)
             except Exception as e:
                 if self.rx_running:  # 只在非主动停止时记录错误
                     self.logger.error(f"接收消息时发生错误: {str(e)}")
+                    # 对于未知错误，也尝试重连
+                    self.connected = False
+                    self.thread_pool.submit(self.reconnect)
                     time.sleep(1)  # 防止错误消息刷屏
         
         self.logger.info("接收线程已结束")
@@ -300,36 +345,53 @@ class FeederCabinetCAN:
     
     def _send_with_retry(self, msg: can.Message, retries: int = 3, retry_delay: float = 0.05) -> bool:
         """
-        发送CAN消息，并在缓冲区满时自动重试。
+        带重试机制的发送方法
 
         Args:
-            msg: 要发送的can.Message对象
-            retries: 最大重试次数
-            retry_delay: 每次重试之间的延迟（秒）
+            msg: can.Message 对象
+            retries: 重试次数
+            retry_delay: 重试间隔 (秒)
 
         Returns:
             bool: 发送是否成功
         """
-        # send_lock应该在此方法之外由调用者管理，以确保消息发送的原子性
+        if not self.connected or not self.bus:
+            self.logger.error("CAN总线未连接，无法发送消息")
+            # 只有在没有进行重连时才触发
+            if not self.reconnect_lock.locked():
+                self.thread_pool.submit(self.reconnect)
+            return False
+
         with self.send_lock:
+            last_exception = None
             for attempt in range(retries):
                 try:
-                    self.bus.send(msg, timeout=0.1) # 使用一个短超时
+                    self.bus.send(msg)
+                    # self.logger.debug(f"成功发送消息 (尝试 {attempt + 1})")
                     return True
                 except can.CanError as e:
-                    # 兼容大小写
-                    if "transmit buffer full" in str(e).lower():
-                        if attempt < retries - 1:
-                            self.logger.warning(f"CAN发送缓冲区已满，将在{retry_delay * 1000}ms后重试... (尝试 {attempt + 1}/{retries})")
-                            time.sleep(retry_delay)
-                        else:
-                            # 最后一次重试失败
-                            self.logger.error(f"发送消息失败，重试{retries}次后CAN发送缓冲区仍然已满: {e}")
-                            return False
-                    else:
-                        # 对于其他类型的CAN错误，立即失败
-                        self.logger.error(f"发送消息时发生未知CAN错误: {e}")
+                    last_exception = e
+                    error_str = str(e).lower()
+                    # 如果设备不存在或网络关闭，则无需重试，立即失败并触发重连
+                    if "no such device" in error_str or "network is down" in error_str:
+                        self.logger.error(f"发送失败，CAN设备或网络不可用: {e}")
+                        self.connected = False
+                        self.thread_pool.submit(self.reconnect)
                         return False
+                    
+                    self.logger.warning(f"发送消息时发生CAN错误 (尝试 {attempt + 1}/{retries}): {e}")
+                    if attempt < retries - 1:
+                        time.sleep(retry_delay)
+                except Exception as e:
+                    self.logger.error(f"发送消息时发生未知错误: {e}")
+                    self.connected = False
+                    self.thread_pool.submit(self.reconnect)
+                    return False
+        
+        self.logger.error(f"发送消息失败，已达到最大重试次数。最后一次错误: {last_exception}")
+        self.connected = False
+        if not self.reconnect_lock.locked():
+            self.thread_pool.submit(self.reconnect)
         return False
 
     def send_message(self, cmd_type: int, extruder: int = 0) -> bool:
@@ -359,12 +421,8 @@ class FeederCabinetCAN:
                 is_extended_id=False
             )
             
-            if self._send_with_retry(msg):
-                self.logger.debug(f"已发送消息: ID=0x{self.SEND_ID:03X}, 命令={hex(cmd_type)}, 序列号={seq}")
-                return True
-            else:
-                # 错误已在 _send_with_retry 中记录
-                return False
+            # 使用带重试的发送方法
+            return self._send_with_retry(msg)
             
         except Exception as e:
             self.logger.error(f"构建或发送消息时发生未知错误: {str(e)}")
@@ -477,14 +535,7 @@ class FeederCabinetCAN:
     
     def __del__(self):
         """析构方法，确保资源被清理"""
-        try:
-            # 关闭线程池
-            if hasattr(self, 'thread_pool'):
-                self.thread_pool.shutdown(wait=False)
-                
-            # 关闭CAN总线
-            if hasattr(self, 'bus') and self.bus:
-                self.bus.shutdown()
-        except Exception as e:
-            # 析构方法中不应抛出异常
-            pass 
+        self.auto_reconnect = False
+        self.disconnect()
+        # 关闭线程池
+        self.thread_pool.shutdown(wait=True) 
