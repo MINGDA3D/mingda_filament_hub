@@ -538,19 +538,16 @@ class KlipperMonitor:
     def disconnect(self):
         """断开与Klipper/Moonraker的连接"""
         self.auto_reconnect = False  # 禁用自动重连
-        if self.ws:
-            self.ws.close()
-            self.logger.info("WebSocket连接已关闭")
         
-        # 关闭线程池
-        self.thread_pool.shutdown(wait=False)
+        if self.ws and self.ws.sock and self.ws.sock.connected:
+            try:
+                self.ws.close()
+                self.logger.info("WebSocket连接已关闭")
+            except Exception as e:
+                self.logger.error(f"关闭WebSocket时发生错误: {e}")
         
-        # 等待重连线程结束
-        if self.reconnect_thread and self.reconnect_thread.is_alive():
-            self.reconnect_thread.join(timeout=1.0)
-            
-        # 重新创建线程池，以便重新连接时使用
-        self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="klipper_monitor_")
+        # 不应在此处管理线程池的生命周期
+        # 线程池应与对象实例共存亡
     
     def enable_auto_reconnect(self, enable=True, interval=5):
         """
@@ -943,13 +940,15 @@ class KlipperMonitor:
     def __del__(self):
         """析构方法，确保资源被清理"""
         try:
+            self.logger.info("正在清理KlipperMonitor资源...")
+            # 确保最终停止
+            self.disconnect()
+            
             # 关闭线程池
             if hasattr(self, 'thread_pool'):
-                self.thread_pool.shutdown(wait=False)
-                
-            # 关闭WebSocket连接
-            if hasattr(self, 'ws') and self.ws:
-                self.ws.close()
+                self.thread_pool.shutdown(wait=True)
+                self.logger.info("KlipperMonitor线程池已关闭")
+
         except Exception as e:
             # 析构方法中不应抛出异常
-            pass
+            self.logger.error(f"清理KlipperMonitor资源时发生异常: {e}")

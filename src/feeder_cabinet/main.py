@@ -346,7 +346,7 @@ class FeederCabinetApp:
             
             return True
         except Exception as e:
-            self.logger.error(f"初始化应用程序时发生错误: {str(e)}")
+            self.logger.error(f"初始化应用程序时发生错误: {str(e)}", exc_info=True)
             return False
             
     def start(self) -> bool:
@@ -366,12 +366,13 @@ class FeederCabinetApp:
                 self.logger.error("连接CAN总线失败")
                 return False
                 
-            # 连接Klipper
+            # 连接Klipper，但不将其视为致命错误
             if not self.klipper_monitor.connect():
-                self.logger.error("连接Klipper失败")
-                self.can_comm.disconnect()
-                return False
-                
+                self.logger.warning("初次连接Klipper失败，系统将在后台自动重连。")
+                # 程序继续运行，依赖后台重连
+            else:
+                self.logger.info("成功连接到Klipper。")
+
             # 启动Klipper监控
             update_interval = self.config['klipper']['update_interval']
             self.klipper_monitor.start_monitoring(interval=update_interval)
@@ -388,18 +389,25 @@ class FeederCabinetApp:
     
     def stop(self):
         """停止应用程序"""
+        self.logger.info("正在停止应用程序...")
+        self.running = False # 设置标志位以停止主循环
+        
         try:
             if self.klipper_monitor:
+                self.logger.info("正在断开Klipper监控器...")
                 self.klipper_monitor.stop_monitoring()
                 self.klipper_monitor.disconnect()
                 
             if self.can_comm:
+                self.logger.info("正在断开CAN通信...")
                 self.can_comm.disconnect()
+
+            # 关闭主应用的线程池
+            self.thread_pool.shutdown(wait=True)
                 
-            self.running = False
-            self.logger.info("应用程序已停止")
+            self.logger.info("应用程序已成功停止。")
         except Exception as e:
-            self.logger.error(f"停止应用程序时发生错误: {str(e)}")
+            self.logger.error(f"停止应用程序时发生错误: {str(e)}", exc_info=True)
     
     def run(self):
         """运行应用程序"""
