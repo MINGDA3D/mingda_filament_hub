@@ -179,33 +179,11 @@ class KlipperMonitor:
     def _on_ws_message(self, ws, message):
         """处理WebSocket接收到的消息"""
         try:
-            # 解析消息数据
-            data = json.loads(message)
-            
-            # 对于状态更新通知，需要快速处理
-            if 'method' in data and data['method'] == 'notify_status_update':
-                status_data = data['params'][0]
-                
-                # 检查是否包含打印状态变化，这类信息必须立即处理
-                if ('print_stats' in status_data and 'state' in status_data['print_stats']):
-                    # 立即提交到线程池处理
-                    self.thread_pool.submit(self._process_ws_message, message)
-                    return
-                    
-            # 使用节流机制，限制非关键消息处理频率
-            current_time = time.time()
-            time_since_last = current_time - self.last_ws_process_time
-            
-            if time_since_last < self.ws_process_interval:
-                # 如果距离上次处理时间太短，则跳过此消息
-                return
-                
-            self.last_ws_process_time = current_time
-                
-            # 使用线程池处理消息
+            # 立即将消息处理任务提交到线程池，以避免阻塞WebSocket IO线程
+            # 任何必要的节流都应该在 _process_ws_message 方法内部处理
             self.thread_pool.submit(self._process_ws_message, message)
         except Exception as e:
-            self.logger.error(f"WebSocket消息处理时发生错误: {str(e)}")
+            self.logger.error(f"提交WebSocket消息到处理池时发生错误: {str(e)}")
     
     def _process_ws_message(self, message):
         """在线程池中处理WebSocket消息"""

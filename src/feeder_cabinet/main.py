@@ -234,7 +234,11 @@ class FeederCabinetApp:
                 
                 if has_filament:
                     # 从映射中查找此挤出机对应的缓冲区
-                    buffer_index = extruder_mapping.get(extruder_index)
+                    buffer_index = extruder_mapping.get(str(extruder_index))
+                    if buffer_index is None:
+                        # 尝试使用int键
+                        buffer_index = extruder_mapping.get(extruder_index)
+
                     if buffer_index is not None:
                         status_bitmap |= (1 << buffer_index)
                     else:
