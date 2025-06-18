@@ -524,7 +524,8 @@ class FeederCabinetCAN:
             )
 
             if self._send_with_retry(msg):
-                self.logger.info(f"已发送挤出机余料状态响应: ID=0x{self.SEND_ID:03X}, 数据={[hex(x) for x in data]}")
+                thread_id = threading.get_ident()
+                self.logger.info(f"已发送挤出机余料状态响应: ID=0x{self.SEND_ID:03X}, 数据={[hex(x) for x in data]}, 线程ID: {thread_id}")
                 return True
             else:
                 return False

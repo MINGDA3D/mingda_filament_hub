@@ -199,7 +199,8 @@ class FeederCabinetApp:
     
     def _handle_filament_status_query(self):
         """处理送料柜的挤出机余料状态查询请求。"""
-        self.logger.info("收到挤出机余料状态查询请求")
+        thread_id = threading.get_ident()
+        self.logger.info(f"收到挤出机余料状态查询请求 (线程ID: {thread_id})")
 
         if not self.klipper_monitor:
             self.logger.error("KlipperMonitor 未初始化，无法查询状态")
@@ -244,7 +245,7 @@ class FeederCabinetApp:
                     else:
                         self.logger.warning(f"在配置中找不到挤出机 {extruder_index} 到缓冲区的映射")
 
-            self.logger.info(f"查询到耗材状态，准备发送响应。Mapping: {extruder_mapping}, Bitmap: {bin(status_bitmap)}")
+            self.logger.info(f"查询到耗材状态，准备发送响应。Mapping: {extruder_mapping}, Bitmap: {bin(status_bitmap)}, 线程ID: {thread_id}")
             if self.can_comm:
                 self.can_comm.send_filament_status_response(is_valid=is_valid, status_bitmap=status_bitmap)
 
