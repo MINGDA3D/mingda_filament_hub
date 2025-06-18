@@ -214,16 +214,6 @@ class KlipperMonitor:
                 elif active_extruder_name == 'extruder1':
                     self.active_extruder = 1
                 
-                current_state = self.printer_state
-                
-                # 检查断料状态 (只在暂停状态下减少检查频率)
-                if self.runout_detection_enabled:
-                    if current_state != "paused":
-                        self._check_filament_status() 
-                    elif not hasattr(self, '_last_paused_filament_check') or (time.time() - self._last_paused_filament_check > 10.0):
-                        self._check_filament_status()
-                        self._last_paused_filament_check = time.time()
-                
                 # 调用状态回调函数 (对于UI更新可以适当降低频率)
                 if not hasattr(self, '_last_callback_time') or time.time() - self._last_callback_time > 0.5:
                     for callback in self.status_callbacks:
@@ -239,17 +229,8 @@ class KlipperMonitor:
                 # 查询响应必须立即处理
                 self._handle_status_update(status_data)
                 
-                # 同样减少暂停状态下的处理频率
-                current_state = self.printer_state
-                if self.runout_detection_enabled:
-                    if current_state != "paused":
-                        self._check_filament_status() 
-                    elif not hasattr(self, '_last_paused_filament_check') or (time.time() - self._last_paused_filament_check > 2.0):
-                        self._check_filament_status()
-                        self._last_paused_filament_check = time.time()
-                
                 # 减少回调频率
-                if not hasattr(self, '_last_callback_time') or time.time() - self._last_callback_time > 0.5:
+                if not hasattr(self, '_last_callback_time') or time.time() - self._last_callback_time > 1.0:
                     for callback in self.status_callbacks:
                         try:
                             callback(self.get_printer_status())
