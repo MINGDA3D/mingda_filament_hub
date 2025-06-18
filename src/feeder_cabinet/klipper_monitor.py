@@ -352,9 +352,9 @@ class KlipperMonitor:
                             self.logger.info(f"断料传感器 {sensor_name} 状态变化: {'有料' if new_state else '无料'}")
         
         # 检查断料状态 - 只在非暂停状态下或者暂停状态下降低频率
-        if self.runout_detection_enabled:
-            if self.printer_state != "paused":
-                self._check_filament_status()
+        # if self.runout_detection_enabled:
+        #     if self.printer_state != "paused":
+        #         self._check_filament_status()
         
         # 调用状态回调
         state_info = {
