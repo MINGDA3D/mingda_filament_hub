@@ -208,6 +208,13 @@ class FeederCabinetApp:
                 self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
             return
 
+        # 检查WebSocket连接状态
+        if not self.klipper_monitor.ws_connected:
+            self.logger.warning("Klipper WebSocket未连接，耗材状态无效")
+            if self.can_comm:
+                self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
+            return
+
         if not hasattr(self.klipper_monitor, 'filament_sensors_status'):
             self.logger.error("KlipperMonitor 中缺少 'filament_sensors_status' 属性，无法获取状态")
             if self.can_comm:
