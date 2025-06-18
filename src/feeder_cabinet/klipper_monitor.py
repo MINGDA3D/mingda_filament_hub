@@ -54,6 +54,7 @@ class KlipperMonitor:
         self.reconnect_interval = 5
         self.auto_reconnect = True
         self.reconnect_thread = None
+        self.connection_lock = threading.Lock()
         
         # 状态变量
         self.printer_state = "unknown"
@@ -131,41 +132,45 @@ class KlipperMonitor:
         Returns:
             bool: 连接是否成功
         """
-        # 如果已有连接，先关闭
-        if self.ws:
-            self.ws.close()
-            if self.ws_thread and self.ws_thread.is_alive():
-                self.ws_thread.join(timeout=1.0)
-        
-        # 初始化WebSocket连接
-        self.logger.info(f"正在连接到WebSocket: {self.ws_url}")
-        self.ws = websocket.WebSocketApp(
-            self.ws_url,
-            on_open=self._on_ws_open,
-            on_message=self._on_ws_message,
-            on_error=self._on_ws_error,
-            on_close=self._on_ws_close
-        )
-        
-        # 启动WebSocket线程
-        self.ws_thread = threading.Thread(
-            target=self.ws.run_forever,
-            daemon=True
-        )
-        self.ws_thread.start()
-        
-        # 等待连接建立
-        timeout = 5
-        start_time = time.time()
-        while not self.ws_connected and (time.time() - start_time) < timeout:
-            time.sleep(0.1)
+        with self.connection_lock:
+            # 如果已有连接，先关闭
+            if self.ws:
+                self.ws.close()
+                if self.ws_thread and self.ws_thread.is_alive():
+                    self.ws_thread.join(timeout=1.0)
             
-        if not self.ws_connected:
-            self.logger.error("WebSocket连接超时")
-            return False
+            # 重置连接状态，为新的连接做准备
+            self.ws_connected = False
+
+            # 初始化WebSocket连接
+            self.logger.info(f"正在连接到WebSocket: {self.ws_url}")
+            self.ws = websocket.WebSocketApp(
+                self.ws_url,
+                on_open=self._on_ws_open,
+                on_message=self._on_ws_message,
+                on_error=self._on_ws_error,
+                on_close=self._on_ws_close
+            )
             
-        self.logger.info(f"成功连接到Klipper/Moonraker WebSocket: {self.ws_url}")
-        return True
+            # 启动WebSocket线程
+            self.ws_thread = threading.Thread(
+                target=self.ws.run_forever,
+                daemon=True
+            )
+            self.ws_thread.start()
+            
+            # 等待连接建立
+            timeout = 5
+            start_time = time.time()
+            while not self.ws_connected and (time.time() - start_time) < timeout:
+                time.sleep(0.1)
+                
+            if not self.ws_connected:
+                self.logger.error("WebSocket连接超时")
+                return False
+                
+            self.logger.info(f"成功连接到Klipper/Moonraker WebSocket: {self.ws_url}")
+            return True
     
     def _on_ws_open(self, ws):
         """WebSocket连接打开后的回调"""
