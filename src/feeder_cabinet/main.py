@@ -213,7 +213,7 @@ class FeederCabinetApp:
                 self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
             return
         
-        sensor_states = self.klipper_monitor.filament_sensors_status
+        sensor_states = self.klipper_monitor.get_filament_status()
         sensors_config = self.config.get('filament_runout', {}).get('sensors', [])
         extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
         

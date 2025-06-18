@@ -80,6 +80,7 @@ class KlipperMonitor:
         self.filament_sensor_pins = [None, None]  # 新增：两个断料传感器引脚
         self.filament_sensor_names = ["Filament_Sensor0", "Filament_Sensor1"]  # 新增：传感器名称
         self.filament_sensors_status: Dict[str, bool] = {} # 新增：传感器名称到状态的映射
+        self.filament_status_lock = threading.Lock() # 新增：保护断料状态的锁
         # 断料传感器对象名称（订阅和状态处理使用）
         self.filament_sensor_objects = ["filament_switch_sensor Filament_Sensor0", "filament_switch_sensor Filament_Sensor1"]
         self.runout_detection_enabled = False
@@ -332,22 +333,23 @@ class KlipperMonitor:
             self.extruder1_info.update(status['extruder1'])
         
         # 更新断料传感器状态 - 使用统一的对象名称
-        for i, sensor_obj in enumerate(self.filament_sensor_objects):
-            if sensor_obj in status:
-                sensor_data = status[sensor_obj]
-                if "filament_detected" in sensor_data:
-                    sensor_name = self.filament_sensor_names[i]
-                    new_state = sensor_data["filament_detected"]
-                    
-                    # 检查状态是否真的发生变化
-                    old_state = self.filament_sensors_status.get(sensor_name, None)
-                    
-                    # 更新两个状态变量
-                    self.filament_present[i] = new_state
-                    self.filament_sensors_status[sensor_name] = new_state
+        with self.filament_status_lock:
+            for i, sensor_obj in enumerate(self.filament_sensor_objects):
+                if sensor_obj in status:
+                    sensor_data = status[sensor_obj]
+                    if "filament_detected" in sensor_data:
+                        sensor_name = self.filament_sensor_names[i]
+                        new_state = sensor_data["filament_detected"]
+                        
+                        # 检查状态是否真的发生变化
+                        old_state = self.filament_sensors_status.get(sensor_name, None)
+                        
+                        # 更新两个状态变量
+                        self.filament_present[i] = new_state
+                        self.filament_sensors_status[sensor_name] = new_state
 
-                    if old_state != new_state:
-                        self.logger.info(f"断料传感器 {sensor_name} 状态变化: {'有料' if new_state else '无料'}")
+                        if old_state != new_state:
+                            self.logger.info(f"断料传感器 {sensor_name} 状态变化: {'有料' if new_state else '无料'}")
         
         # 检查断料状态 - 只在非暂停状态下或者暂停状态下降低频率
         if self.runout_detection_enabled:
@@ -936,6 +938,16 @@ class KlipperMonitor:
         }
         
         return status
+
+    def get_filament_status(self) -> Dict[str, bool]:
+        """
+        线程安全地获取断料传感器状态
+        
+        Returns:
+            Dict[str, bool]: 传感器状态字典的副本
+        """
+        with self.filament_status_lock:
+            return self.filament_sensors_status.copy()
 
     def __del__(self):
         """析构方法，确保资源被清理"""
