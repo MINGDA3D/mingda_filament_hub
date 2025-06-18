@@ -65,7 +65,7 @@ class FeederCabinetCAN:
         self.logger = logging.getLogger("feeder_cabinet.can")
         
         # 线程池
-        self.thread_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="can_comm_")
+        self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="can_comm_")
         
         # CAN消息ID定义
         self.SEND_ID = 0x10A       # 打印机 -> 送料柜
