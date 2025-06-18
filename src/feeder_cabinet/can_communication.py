@@ -256,19 +256,20 @@ class FeederCabinetCAN:
                     if command == self.CMD_QUERY_PRINTER_FILAMENT_STATUS:
                         if self.query_callback:
                             self.thread_pool.submit(self.query_callback)
-                    # 否则，按原有的状态消息处理
-                    elif len(msg.data) >= 3:
+                    # 否则，视为普通状态消息
+                    else:
+                        # 将接收到的数据放入队列，即使数据不完整
                         status_data = {
-                            'status': msg.data[0],    # 状态码
-                            'progress': msg.data[1],  # 进度 (0-100)
-                            'error_code': msg.data[2] # 错误码
+                            'status': msg.data[0],
+                            'progress': msg.data[1] if len(msg.data) > 1 else 0,
+                            'error_code': msg.data[2] if len(msg.data) > 2 else 0,
+                            'raw_data': list(msg.data)
                         }
                         
-                        # 使用队列传递状态数据，避免阻塞接收线程
                         self.rx_queue.put(status_data)
                         
-                        # 如果有状态回调函数，使用线程池调用
                         if self.status_callback:
+                            # 异步处理状态更新
                             self.thread_pool.submit(self._process_status, status_data)
             except can.CanError as e:
                 if self.rx_running:
