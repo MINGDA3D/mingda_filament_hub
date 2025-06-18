@@ -174,6 +174,9 @@ class KlipperMonitor:
     
     def _on_ws_open(self, ws):
         """WebSocket连接打开后的回调"""
+        if ws is not self.ws:
+            self.logger.debug("忽略来自旧WebSocket的打开事件")
+            return
         self.logger.info("WebSocket连接已打开")
         self.ws_connected = True
         self.reconnect_count = 0  # 重置重连计数
@@ -183,6 +186,9 @@ class KlipperMonitor:
     
     def _on_ws_message(self, ws, message):
         """处理WebSocket接收到的消息"""
+        if ws is not self.ws:
+            return  # 忽略来自旧连接的消息
+
         try:
             # 立即将消息处理任务提交到线程池，以避免阻塞WebSocket IO线程
             # 任何必要的节流都应该在 _process_ws_message 方法内部处理
@@ -248,10 +254,17 @@ class KlipperMonitor:
     
     def _on_ws_error(self, ws, error):
         """处理WebSocket错误"""
+        if ws is not self.ws:
+            self.logger.debug(f"忽略来自旧WebSocket的错误事件: {str(error)}")
+            return
         self.logger.error(f"WebSocket错误: {str(error)}")
     
     def _on_ws_close(self, ws, close_status_code, close_msg):
         """处理WebSocket连接关闭"""
+        if ws is not self.ws:
+            self.logger.debug("忽略来自旧WebSocket的关闭事件")
+            return
+            
         self.logger.info(f"WebSocket连接关闭: {close_status_code} - {close_msg}")
         self.ws_connected = False
         
