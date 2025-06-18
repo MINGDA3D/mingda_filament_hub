@@ -179,7 +179,6 @@ class KlipperMonitor:
             return
         self.logger.info("WebSocket连接已打开")
         self.ws_connected = True
-        self.reconnect_count = 0  # 重置重连计数
         
         # 订阅打印机对象
         self._subscribe_objects()
@@ -294,11 +293,11 @@ class KlipperMonitor:
         
         if self._establish_connection():
             self.logger.info("重连成功")
+            self.reconnect_count = 0  # 在重连流程成功后重置计数器
         else:
             self.logger.error("重连失败")
-            # 如果仍启用自动重连，则安排下一次重连
-            if self.auto_reconnect:
-                self._schedule_reconnect()  # 这里不再创建新线程，而是使用线程池
+            # 如果连接建立失败，_on_ws_close 会被触发并处理下一次重连调度
+            # 因此此处不再需要手动调度，以避免重复
     
     def _handle_status_update(self, status):
         """处理状态更新数据"""
