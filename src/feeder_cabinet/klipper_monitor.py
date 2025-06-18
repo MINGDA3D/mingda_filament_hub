@@ -155,6 +155,11 @@ class KlipperMonitor:
             # 启动WebSocket线程
             self.ws_thread = threading.Thread(
                 target=self.ws.run_forever,
+                kwargs={
+                    'ping_interval': 10,
+                    'ping_timeout': 5,
+                    'sslopt': {"check_hostname": False} # 兼容旧版websocket-client
+                },
                 daemon=True
             )
             self.ws_thread.start()
@@ -256,7 +261,14 @@ class KlipperMonitor:
         if ws is not self.ws:
             self.logger.debug(f"忽略来自旧WebSocket的错误事件: {str(error)}")
             return
+            
         self.logger.error(f"WebSocket错误: {str(error)}")
+        # 当发生错误时，我们假设连接已断开
+        if self.ws_connected:
+            self.ws_connected = False
+            self.printer_state = "disconnected"
+            self.logger.warning("WebSocket因错误而断开，将尝试重连...")
+            # on_close通常会被调用，这里不需要手动调用_schedule_reconnect
     
     def _on_ws_close(self, ws, close_status_code, close_msg):
         """处理WebSocket连接关闭"""
@@ -265,7 +277,10 @@ class KlipperMonitor:
             return
             
         self.logger.info(f"WebSocket连接关闭: {close_status_code} - {close_msg}")
+        
+        # 无论如何都应更新状态
         self.ws_connected = False
+        self.printer_state = "disconnected"
         
         # 如果启用了自动重连，则尝试重连
         if self.auto_reconnect:
