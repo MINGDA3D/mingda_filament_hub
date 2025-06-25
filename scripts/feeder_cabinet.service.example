@@ -1,0 +1,17 @@
+[Unit]
+Description=feeder cabinet auto feed system
+After=network.target moonraker.service
+Wants=moonraker.service
+
+[Service]
+Type=simple
+User=mingda
+WorkingDirectory=/home/mingda/feeder_cabinet_help
+ExecStart=/home/mingda/feeder_cabinet_venv/bin/python /home/mingda/feeder_cabinet_help/start_feeder_cabinet.py -c /home/mingda/printer_data/config/config.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

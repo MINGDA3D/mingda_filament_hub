@@ -12,7 +12,10 @@ import can
 import logging
 import time
 import threading
-from typing import Optional, Callable, Dict, List, Any, Union
+from typing import Optional, Callable, Dict, List, Any, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import can
 import queue
 from concurrent.futures import ThreadPoolExecutor
 
@@ -344,7 +347,7 @@ class FeederCabinetCAN:
         """
         self.query_callback = callback
     
-    def _send_with_retry(self, msg: can.Message, retries: int = 3, retry_delay: float = 0.05) -> bool:
+    def _send_with_retry(self, msg: 'can.Message', retries: int = 3, retry_delay: float = 0.05) -> bool:
         """
         带重试机制的发送方法
 

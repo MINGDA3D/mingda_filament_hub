@@ -50,6 +50,9 @@ class FeederCabinetApp:
         Args:
             config_path: 配置文件路径
         """
+        # 先初始化logger为None
+        self.logger = None
+        
         # 加载配置
         self.config = self._load_config(config_path)
         
@@ -136,20 +139,24 @@ class FeederCabinetApp:
                     if user_config:
                         # 递归更新配置
                         self._update_config(config, user_config)
-                        self.logger.info(f"从 {config_path} 加载配置")
+                        if self.logger:
+                            self.logger.info(f"从 {config_path} 加载配置")
             except Exception as e:
-                self.logger.error(f"加载配置文件时发生错误: {str(e)}")
+                if self.logger:
+                    self.logger.error(f"加载配置文件时发生错误: {str(e)}")
         else:
-            self.logger.info("使用默认配置")
+            if self.logger:
+                self.logger.info("使用默认配置")
         
         # 记录关键配置项
-        self.logger.info(f"CAN接口: {config['can']['interface']}, 波特率: {config['can']['bitrate']}")
-        self.logger.info(f"Moonraker URL: {config['klipper']['moonraker_url']}")
-        self.logger.info(f"挤出机数量: {config['extruders']['count']}")
-        self.logger.info(f"断料检测: {'启用' if config['filament_runout']['enabled'] else '禁用'}")
-        if config['filament_runout']['enabled']:
-            for sensor in config['filament_runout']['sensors']:
-                self.logger.info(f"断料传感器: {sensor['name']} 用于挤出机 {sensor['extruder']}")
+        if self.logger:
+            self.logger.info(f"CAN接口: {config['can']['interface']}, 波特率: {config['can']['bitrate']}")
+            self.logger.info(f"Moonraker URL: {config['klipper']['moonraker_url']}")
+            self.logger.info(f"挤出机数量: {config['extruders']['count']}")
+            self.logger.info(f"断料检测: {'启用' if config['filament_runout']['enabled'] else '禁用'}")
+            if config['filament_runout']['enabled']:
+                for sensor in config['filament_runout']['sensors']:
+                    self.logger.info(f"断料传感器: {sensor['name']} 用于挤出机 {sensor['extruder']}")
         
         return config
     
