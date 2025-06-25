@@ -51,6 +51,15 @@ logging:
   
   # 是否输出到控制台（开发调试用）
   console_output: true
+  
+  # 单个日志文件最大大小（字节），默认10MB
+  max_file_size: 10485760  # 10 * 1024 * 1024
+  
+  # 保留的日志文件数量（轮转后）
+  backup_count: 5
+  
+  # 日志文件最大保留天数（自动清理）
+  max_age_days: 30
 
 # 安全配置
 safety:

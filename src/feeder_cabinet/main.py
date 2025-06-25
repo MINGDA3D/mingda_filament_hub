@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from feeder_cabinet.can_communication import FeederCabinetCAN
 from feeder_cabinet.klipper_monitor import KlipperMonitor
+from feeder_cabinet.log_manager import LogManager
 
 # 配置默认参数
 DEFAULT_CONFIG_PATH = "/home/mingda/feeder_cabinet_help/config/config.yaml"
@@ -43,15 +44,23 @@ class FeederCabinetApp:
         Args:
             config_path: 配置文件路径
         """
-        # 初始化记录器
-        self.logger = self._setup_logging("feeder_cabinet", "INFO")
-        
         # 加载配置
         self.config = self._load_config(config_path)
         
-        # 应用配置后更新日志级别
-        log_level = self.config.get('logging', {}).get('level', DEFAULT_LOG_LEVEL)
-        self._update_log_level(log_level)
+        # 初始化日志管理器
+        log_config = self.config.get('logging', {})
+        self.log_manager = LogManager(
+            app_name="feeder_cabinet",
+            log_dir=log_config.get('log_dir', DEFAULT_LOG_DIR),
+            log_level=log_config.get('level', DEFAULT_LOG_LEVEL),
+            max_file_size=log_config.get('max_file_size', 10 * 1024 * 1024),  # 默认10MB
+            backup_count=log_config.get('backup_count', 5),
+            max_age_days=log_config.get('max_age_days', 30),
+            console_output=log_config.get('console_output', True)
+        )
+        
+        # 设置主logger
+        self.logger = self.log_manager.setup_logger()
         
         # 组件实例
         self.can_comm = None
@@ -64,52 +73,7 @@ class FeederCabinetApp:
         # 线程池
         self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="feeder_cabinet_")
     
-    def _setup_logging(self, logger_name: str, log_level: str) -> logging.Logger:
-        """
-        设置日志记录器
-        
-        Args:
-            logger_name: 记录器名称
-            log_level: 日志级别
-            
-        Returns:
-            logging.Logger: 配置好的记录器
-        """
-        logger = logging.getLogger(logger_name)
-        logger.setLevel(getattr(logging, log_level))
-        
-        # 创建控制台处理器
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(getattr(logging, log_level))
-        
-        # 设置日志格式
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        console_handler.setFormatter(formatter)
-        
-        # 添加处理器
-        logger.addHandler(console_handler)
-        
-        return logger
     
-    def _update_log_level(self, log_level: str):
-        """
-        更新日志级别
-        
-        Args:
-            log_level: 日志级别
-        """
-        level = getattr(logging, log_level)
-        self.logger.setLevel(level)
-        for handler in self.logger.handlers:
-            handler.setLevel(level)
-            
-        # 更新根记录器
-        root_logger = logging.getLogger("feeder_cabinet")
-        root_logger.setLevel(level)
-        for handler in root_logger.handlers:
-            handler.setLevel(level)
     
     def _load_config(self, config_path: str = None) -> Dict[str, Any]:
         """
@@ -286,32 +250,6 @@ class FeederCabinetApp:
             if self.can_comm:
                 self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
     
-    def _setup_file_logging(self):
-        """设置文件日志"""
-        log_dir = self.config['logging']['log_dir']
-        log_level = self.config['logging']['level']
-        
-        # 确保日志目录存在
-        os.makedirs(log_dir, exist_ok=True)
-        
-        # 日志文件路径
-        log_file = os.path.join(log_dir, 'feeder_cabinet.log')
-        
-        # 创建文件处理器
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(getattr(logging, log_level))
-        
-        # 设置日志格式
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        file_handler.setFormatter(formatter)
-        
-        # 添加处理器到根记录器
-        root_logger = logging.getLogger("feeder_cabinet")
-        root_logger.addHandler(file_handler)
-        
-        self.logger.info(f"日志文件: {log_file}")
     
     def init(self) -> bool:
         """
@@ -321,8 +259,12 @@ class FeederCabinetApp:
             bool: 初始化是否成功
         """
         try:
-            # 设置文件日志
-            self._setup_file_logging()
+            # 记录日志配置信息
+            self.logger.info(f"日志文件目录: {self.log_manager.log_dir}")
+            self.logger.info(f"日志文件: {self.log_manager.log_file}")
+            self.logger.info(f"日志级别: {logging.getLevelName(self.log_manager.log_level)}")
+            self.logger.info(f"日志轮转: 文件大小限制={self.log_manager.max_file_size/1024/1024}MB, 保留数量={self.log_manager.backup_count}")
+            self.logger.info(f"日志自动清理: {self.log_manager.max_age_days}天")
             
             # 初始化CAN通信
             can_config = self.config['can']
@@ -333,6 +275,9 @@ class FeederCabinetApp:
             )
             self.can_comm.set_query_callback(self._handle_filament_status_query)
             
+            # 为CAN通信模块设置logger
+            self.can_comm.logger = self.log_manager.get_child_logger(self.logger, "can")
+            
             # 初始化Klipper监控器
             klipper_config = self.config['klipper']
             self.logger.info(f"初始化Klipper监控器，Moonraker URL: {klipper_config['moonraker_url']}")
@@ -341,6 +286,9 @@ class FeederCabinetApp:
                 moonraker_url=klipper_config['moonraker_url'],
                 extruder_config=self.config.get('extruders', None)
             )
+            
+            # 为Klipper监控模块设置logger
+            self.klipper_monitor.logger = self.log_manager.get_child_logger(self.logger, "klipper")
             
             # 设置默认活跃挤出机
             extruder_config = self.config.get('extruders', {})
@@ -484,6 +432,16 @@ def parse_args():
         help="初始化但不启动系统",
         action="store_true"
     )
+    parser.add_argument(
+        "--log-stats",
+        help="显示日志统计信息并退出",
+        action="store_true"
+    )
+    parser.add_argument(
+        "--archive-logs",
+        help="归档旧日志文件",
+        action="store_true"
+    )
     
     return parser.parse_args()
 
@@ -496,7 +454,30 @@ def main():
     
     # 如果指定了详细输出，设置日志级别为DEBUG
     if args.verbose:
-        app._update_log_level("DEBUG")
+        app.log_manager.update_log_level(app.logger, "DEBUG")
+    
+    # 如果显示日志统计
+    if args.log_stats:
+        stats = app.log_manager.get_log_stats()
+        app.logger.info("日志统计信息：")
+        app.logger.info(f"  日志目录: {stats['log_dir']}")
+        app.logger.info(f"  日志文件数: {len(stats['files'])}")
+        app.logger.info(f"  总大小: {stats['total_size']/1024/1024:.2f} MB")
+        if stats['oldest_file']:
+            app.logger.info(f"  最旧文件: {os.path.basename(stats['oldest_file'])}")
+        if stats['newest_file']:
+            app.logger.info(f"  最新文件: {os.path.basename(stats['newest_file'])}")
+        for file_info in stats['files']:
+            app.logger.info(f"    - {os.path.basename(file_info['path'])}: {file_info['size']/1024:.2f} KB")
+        return
+    
+    # 如果归档日志
+    if args.archive_logs:
+        if app.log_manager.archive_logs():
+            app.logger.info("日志归档成功")
+        else:
+            app.logger.error("日志归档失败")
+        return
     
     # 如果只检查配置
     if args.check_config:
