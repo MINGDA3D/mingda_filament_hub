@@ -8,4 +8,18 @@
 版本: 1.0.0
 """
 
-__version__ = "1.0.0" 
+__version__ = "1.0.0"
+
+# 导出主要的类和函数
+from .main import FeederCabinetApp, main
+from .can_communication import FeederCabinetCAN
+from .klipper_monitor import KlipperMonitor
+from .log_manager import LogManager
+
+__all__ = [
+    'FeederCabinetApp',
+    'main',
+    'FeederCabinetCAN', 
+    'KlipperMonitor',
+    'LogManager'
+] 

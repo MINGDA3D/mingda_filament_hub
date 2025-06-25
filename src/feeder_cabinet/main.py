@@ -21,9 +21,15 @@ from typing import Dict, Any, Optional
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-from feeder_cabinet.can_communication import FeederCabinetCAN
-from feeder_cabinet.klipper_monitor import KlipperMonitor
-from feeder_cabinet.log_manager import LogManager
+try:
+    from feeder_cabinet.can_communication import FeederCabinetCAN
+    from feeder_cabinet.klipper_monitor import KlipperMonitor
+    from feeder_cabinet.log_manager import LogManager
+except ImportError:
+    # 如果从包导入失败，尝试相对导入
+    from .can_communication import FeederCabinetCAN
+    from .klipper_monitor import KlipperMonitor
+    from .log_manager import LogManager
 
 # 配置默认参数
 DEFAULT_CONFIG_PATH = "/home/mingda/feeder_cabinet_help/config/config.yaml"
@@ -447,10 +453,49 @@ def parse_args():
 
 def main():
     """主函数"""
-    args = parse_args()
-    
-    # 创建应用程序实例
-    app = FeederCabinetApp(config_path=args.config)
+    try:
+        # 最早的错误捕获 - 先创建一个简单的日志记录器
+        import traceback
+        
+        # 创建临时日志记录器以便调试启动问题
+        temp_logger = logging.getLogger("feeder_cabinet.startup")
+        temp_logger.setLevel(logging.DEBUG)
+        
+        # 添加控制台和文件处理器
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.DEBUG)
+        console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(console_formatter)
+        temp_logger.addHandler(console_handler)
+        
+        # 尝试创建日志目录并添加文件处理器
+        try:
+            os.makedirs(DEFAULT_LOG_DIR, exist_ok=True)
+            file_handler = logging.FileHandler(os.path.join(DEFAULT_LOG_DIR, 'feeder_cabinet_startup.log'))
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(console_formatter)
+            temp_logger.addHandler(file_handler)
+        except Exception as e:
+            temp_logger.error(f"无法创建日志文件: {e}")
+        
+        temp_logger.info("启动 feeder_cabinet 主程序...")
+        
+        args = parse_args()
+        temp_logger.info(f"命令行参数: {args}")
+        
+        # 创建应用程序实例
+        temp_logger.info(f"加载配置文件: {args.config}")
+        app = FeederCabinetApp(config_path=args.config)
+        temp_logger.info("应用程序实例创建成功")
+        
+    except Exception as e:
+        # 如果无法创建应用，至少输出错误到标准输出
+        error_msg = f"创建应用程序实例失败: {str(e)}\n{traceback.format_exc()}"
+        if 'temp_logger' in locals():
+            temp_logger.error(error_msg)
+        else:
+            print(error_msg, file=sys.stderr)
+        sys.exit(1)
     
     # 如果指定了详细输出，设置日志级别为DEBUG
     if args.verbose:
@@ -493,7 +538,11 @@ def main():
         return
     
     # 正常运行
-    app.run()
+    try:
+        app.run()
+    except Exception as e:
+        app.logger.error(f"运行时发生错误: {str(e)}", exc_info=True)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main() 
