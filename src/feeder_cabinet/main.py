@@ -28,7 +28,7 @@ from feeder_cabinet.klipper_monitor import KlipperMonitor
 DEFAULT_CONFIG_PATH = "/home/mingda/feeder_cabinet_help/config/config.yaml"
 DEFAULT_CAN_INTERFACE = "can1"
 DEFAULT_CAN_BITRATE = 1000000
-DEFAULT_MOONRAKER_URL = "http://192.168.86.200:7125"
+DEFAULT_MOONRAKER_URL = "http://localhost:7125"
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_UPDATE_INTERVAL = 5.0
 DEFAULT_LOG_DIR = "/home/mingda/printer_data/logs"
@@ -223,12 +223,32 @@ class FeederCabinetApp:
         
         sensor_states = self.klipper_monitor.get_filament_status()
         sensors_config = self.config.get('filament_runout', {}).get('sensors', [])
+        
+        # 获取挤出机到缓冲区的映射
+        # 优先使用mapping字段，如果不存在则从left/right配置构建
         extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
+        if not extruder_mapping:
+            # 从left/right配置构建映射
+            extruders_config = self.config.get('extruders', {})
+            if 'left' in extruders_config and 'right' in extruders_config:
+                extruder_mapping = {
+                    0: extruders_config['left'].get('buffer', 0),
+                    1: extruders_config['right'].get('buffer', 1)
+                }
+                self.logger.debug(f"从left/right配置构建映射: {extruder_mapping}")
         
         status_bitmap = 0
         is_valid = True
         
         try:
+            # 如果没有sensors配置，使用默认的传感器列表
+            if not sensors_config:
+                sensors_config = [
+                    {'name': 'Filament_Sensor0', 'extruder': 0},
+                    {'name': 'Filament_Sensor1', 'extruder': 1}
+                ]
+                self.logger.debug("使用默认传感器配置")
+            
             # 根据挤出机到缓冲区的映射构建位图
             for sensor_info in sensors_config:
                 sensor_name = sensor_info.get('name')
@@ -242,17 +262,22 @@ class FeederCabinetApp:
                 
                 if has_filament:
                     # 从映射中查找此挤出机对应的缓冲区
-                    buffer_index = extruder_mapping.get(str(extruder_index))
-                    if buffer_index is None:
-                        # 尝试使用int键
+                    # 统一处理键类型
+                    buffer_index = None
+                    if isinstance(extruder_index, int):
                         buffer_index = extruder_mapping.get(extruder_index)
+                    if buffer_index is None:
+                        buffer_index = extruder_mapping.get(str(extruder_index))
 
                     if buffer_index is not None:
                         status_bitmap |= (1 << buffer_index)
+                        self.logger.debug(f"挤出机 {extruder_index} 有料，缓冲区 {buffer_index} 位被设置")
                     else:
                         self.logger.warning(f"在配置中找不到挤出机 {extruder_index} 到缓冲区的映射")
+                else:
+                    self.logger.debug(f"挤出机 {extruder_index} 无料")
 
-            self.logger.info(f"查询到耗材状态，准备发送响应。Mapping: {extruder_mapping}, Bitmap: {bin(status_bitmap)}, 线程ID: {thread_id}")
+            self.logger.info(f"查询到耗材状态，准备发送响应。Sensor states: {sensor_states}, Mapping: {extruder_mapping}, Bitmap: {bin(status_bitmap)}, 线程ID: {thread_id}")
             if self.can_comm:
                 self.can_comm.send_filament_status_response(is_valid=is_valid, status_bitmap=status_bitmap)
 

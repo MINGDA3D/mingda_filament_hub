@@ -10,8 +10,9 @@ can:
 
 # Klipper/Moonraker连接配置
 klipper:
-  # Moonraker API URL，如果Moonraker运行在不同主机，请修改
-  moonraker_url: http://192.168.86.200:7125
+  # Moonraker API URL，默认使用本机地址
+  # 如果Moonraker运行在不同主机，请修改为对应的IP地址
+  moonraker_url: http://localhost:7125
   
   # 状态更新间隔（秒），影响状态检测的响应速度
   # 值越小响应越快，但会增加系统负载
