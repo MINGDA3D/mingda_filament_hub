@@ -347,9 +347,16 @@ class KlipperMonitor:
         
         # 更新断料传感器状态 - 使用统一的对象名称
         with self.filament_status_lock:
+            # 调试日志：显示收到的状态数据中包含的传感器对象
+            sensor_objects_in_status = [obj for obj in self.filament_sensor_objects if obj in status]
+            if sensor_objects_in_status:
+                self.logger.debug(f"状态更新中包含的传感器对象: {sensor_objects_in_status}")
+            
             for i, sensor_obj in enumerate(self.filament_sensor_objects):
                 if sensor_obj in status:
                     sensor_data = status[sensor_obj]
+                    self.logger.debug(f"处理传感器 {sensor_obj} 的数据: {sensor_data}")
+                    
                     if "filament_detected" in sensor_data:
                         sensor_name = self.filament_sensor_names[i]
                         new_state = sensor_data["filament_detected"]
@@ -360,9 +367,14 @@ class KlipperMonitor:
                         # 更新两个状态变量
                         self.filament_present[i] = new_state
                         self.filament_sensors_status[sensor_name] = new_state
+                        
+                        # 调试日志：显示状态更新详情
+                        self.logger.debug(f"传感器 {sensor_name} (索引 {i}): 旧状态={old_state}, 新状态={new_state}")
 
                         if old_state != new_state:
                             self.logger.info(f"断料传感器 {sensor_name} 状态变化: {'有料' if new_state else '无料'}")
+                    else:
+                        self.logger.debug(f"传感器 {sensor_obj} 数据中没有 'filament_detected' 字段")
         
         # 检查断料状态 - 只在暂停状态下降低频率
         if self.printer_state == "paused" and self.runout_detection_enabled:

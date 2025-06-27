@@ -81,6 +81,9 @@ class FeederCabinetApp:
         
         # 线程池
         self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="feeder_cabinet_")
+        
+        # 配置文件路径
+        self.config_path = config_path
     
     
     
@@ -174,6 +177,32 @@ class FeederCabinetApp:
             else:
                 config[key] = value
     
+    def _save_config(self, config_path: str = None) -> bool:
+        """
+        保存配置文件
+        
+        Args:
+            config_path: 配置文件路径，如果为None则使用加载时的路径
+            
+        Returns:
+            bool: 保存是否成功
+        """
+        if not config_path:
+            config_path = self.config_path
+            
+        if not config_path:
+            self.logger.error("未指定配置文件路径，无法保存配置")
+            return False
+            
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(self.config, f, default_flow_style=False, allow_unicode=True)
+            self.logger.info(f"配置已保存到 {config_path}")
+            return True
+        except Exception as e:
+            self.logger.error(f"保存配置文件时发生错误: {str(e)}")
+            return False
+    
     def _handle_filament_status_query(self):
         """处理送料柜的挤出机余料状态查询请求。"""
         thread_id = threading.get_ident()
@@ -200,6 +229,24 @@ class FeederCabinetApp:
         
         sensor_states = self.klipper_monitor.get_filament_status()
         sensors_config = self.config.get('filament_runout', {}).get('sensors', [])
+        
+        # 添加详细的调试信息
+        self.logger.debug(f"WebSocket连接状态: {self.klipper_monitor.ws_connected}")
+        self.logger.debug(f"原始传感器状态: {sensor_states}")
+        self.logger.debug(f"传感器配置: {sensors_config}")
+        self.logger.debug(f"filament_present数组: {self.klipper_monitor.filament_present}")
+        
+        # 检查当前打印机状态
+        printer_status = self.klipper_monitor.get_printer_status()
+        self.logger.debug(f"打印机状态: {printer_status.get('printer_state', 'unknown')}")
+        
+        # 检查传感器对象订阅状态
+        self.logger.debug(f"传感器监控是否启用: {self.klipper_monitor.runout_detection_enabled}")
+        self.logger.debug(f"WebSocket重连次数: {self.klipper_monitor.reconnect_count}")
+        
+        # 检查传感器名称是否匹配
+        expected_sensor_objects = self.klipper_monitor.filament_sensor_objects
+        self.logger.debug(f"期望的传感器对象: {expected_sensor_objects}")
         
         # 获取挤出机到缓冲区的映射
         # 优先使用mapping字段，如果不存在则从left/right配置构建
@@ -263,6 +310,58 @@ class FeederCabinetApp:
             if self.can_comm:
                 self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
     
+    def _handle_feeder_mapping_set(self, mapping_data: Dict[str, Any]):
+        """
+        处理送料柜发送的料管映射设置命令
+        
+        Args:
+            mapping_data: 映射数据字典，包含left_buffer, right_buffer, seq
+        """
+        try:
+            left_buffer = mapping_data.get('left_buffer', 0)
+            right_buffer = mapping_data.get('right_buffer', 1)
+            seq = mapping_data.get('seq', 0)
+            
+            self.logger.info(f"收到料管映射设置命令: 左缓冲区={left_buffer}, 右缓冲区={right_buffer}, 序列={seq}")
+            
+            # 更新配置
+            if 'extruders' not in self.config:
+                self.config['extruders'] = {}
+            
+            # 更新mapping配置 (挤出机索引: 缓冲区索引)
+            self.config['extruders']['mapping'] = {
+                0: left_buffer,   # 左挤出机(0) -> 左缓冲区
+                1: right_buffer   # 右挤出机(1) -> 右缓冲区
+            }
+            
+            # 同时更新legacy格式的配置以保持兼容性
+            if 'left' not in self.config['extruders']:
+                self.config['extruders']['left'] = {}
+            if 'right' not in self.config['extruders']:
+                self.config['extruders']['right'] = {}
+                
+            self.config['extruders']['left']['buffer'] = left_buffer
+            self.config['extruders']['right']['buffer'] = right_buffer
+            
+            # 保存配置文件
+            save_success = self._save_config()
+            
+            # 发送响应
+            if self.can_comm:
+                status = 0 if save_success else 1  # 0=成功, 1=失败
+                self.can_comm.send_feeder_mapping_response(left_buffer, right_buffer, status)
+                
+            if save_success:
+                self.logger.info(f"料管映射已更新并保存: 左挤出机->缓冲区{left_buffer}, 右挤出机->缓冲区{right_buffer}")
+            else:
+                self.logger.error("料管映射更新成功但保存配置文件失败")
+                
+        except Exception as e:
+            self.logger.error(f"处理料管映射设置时发生错误: {str(e)}", exc_info=True)
+            # 发送错误响应
+            if self.can_comm:
+                self.can_comm.send_feeder_mapping_response(0, 0, 1)  # 状态1表示错误
+    
     
     def init(self) -> bool:
         """
@@ -287,6 +386,7 @@ class FeederCabinetApp:
                 bitrate=can_config['bitrate']
             )
             self.can_comm.set_query_callback(self._handle_filament_status_query)
+            self.can_comm.set_mapping_set_callback(self._handle_feeder_mapping_set)
             
             # 为CAN通信模块设置logger
             self.can_comm.logger = self.log_manager.get_child_logger(self.logger, "can")
