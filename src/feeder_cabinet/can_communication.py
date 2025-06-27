@@ -576,7 +576,8 @@ class FeederCabinetCAN:
             
         try:
             validity_byte = 0x00 if is_valid else 0x01
-            data = [self.CMD_PRINTER_FILAMENT_STATUS_RESPONSE, validity_byte, status_bitmap]
+            # 填充为8字节，后面补0
+            data = [self.CMD_PRINTER_FILAMENT_STATUS_RESPONSE, validity_byte, status_bitmap, 0, 0, 0, 0, 0]
             
             msg = can.Message(
                 arbitration_id=self.SEND_ID,
