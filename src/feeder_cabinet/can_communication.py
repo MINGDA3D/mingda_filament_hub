@@ -270,7 +270,7 @@ class FeederCabinetCAN:
                             self.thread_pool.submit(self.mapping_query_callback)
                     # 检查是否为设置料管映射命令（送料柜发送的）
                     elif command == self.CMD_SET_FEEDER_MAPPING:
-                        if len(msg.data) >= 4 and msg.data[1] < 0x02 and msg.data[2] < 0x02:
+                        if len(msg.data) >= 4 and msg.data[3] == 0x00 and msg.data[1] < 2 and msg.data[2] < 2 and msg.data[1] != msg.data[2]:
                             mapping_data = {
                                 'left_buffer': msg.data[1],   # 左缓冲区编号
                                 'right_buffer': msg.data[2],  # 右缓冲区编号
