@@ -315,14 +315,14 @@ class FeederCabinetApp:
         处理送料柜发送的料管映射设置命令
         
         Args:
-            mapping_data: 映射数据字典，包含left_buffer, right_buffer, seq
+            mapping_data: 映射数据字典，包含left_buffer, right_buffer, status
         """
         try:
             left_buffer = mapping_data.get('left_buffer', 0)
             right_buffer = mapping_data.get('right_buffer', 1)
-            seq = mapping_data.get('seq', 0)
+            status = mapping_data.get('status', 0)
             
-            self.logger.info(f"收到料管映射设置命令: 左缓冲区={left_buffer}, 右缓冲区={right_buffer}, 序列={seq}")
+            self.logger.info(f"收到料管映射设置命令: 左缓冲区={left_buffer}, 右缓冲区={right_buffer}, 状态={status}")
             
             # 更新配置
             if 'extruders' not in self.config:

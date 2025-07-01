@@ -85,7 +85,6 @@ class FeederCabinetCAN:
         
         # 状态和回调
         self.connected = False
-        self.seq_number = 0  # 消息序列号
         self.status_callback = None  # 状态回调函数
         self.query_callback = None   # 查询回调函数
         self.mapping_query_callback = None    # 料管映射查询回调函数
@@ -271,12 +270,13 @@ class FeederCabinetCAN:
                             self.thread_pool.submit(self.mapping_query_callback)
                     # 检查是否为设置料管映射命令（送料柜发送的）
                     elif command == self.CMD_SET_FEEDER_MAPPING:
-                        if len(msg.data) >= 4:
+                        if len(msg.data) >= 4 and msg.data[1] < 0x02 and msg.data[2] < 0x02:
                             mapping_data = {
-                                'left_buffer': msg.data[2],   # 左缓冲区编号
-                                'right_buffer': msg.data[3],  # 右缓冲区编号
-                                'seq': msg.data[1] if len(msg.data) > 1 else 0
+                                'left_buffer': msg.data[1],   # 左缓冲区编号
+                                'right_buffer': msg.data[2],  # 右缓冲区编号
+                                'status': msg.data[3] if len(msg.data) > 3 else 0  # 状态字段
                             }
+                            self.logger.info(f"收到设置料管映射命令: 左缓冲区={msg.data[1]}, 右缓冲区={msg.data[2]}, 状态={mapping_data['status']}")
                             if self.mapping_set_callback:
                                 self.thread_pool.submit(self.mapping_set_callback, mapping_data)
                     # 检查是否为料管映射响应
@@ -287,6 +287,7 @@ class FeederCabinetCAN:
                                 'right_extruder': msg.data[2],
                                 'status': msg.data[3] if len(msg.data) > 3 else 0
                             }
+                            self.logger.info(f"收到料管映射响应: 左挤出机={msg.data[1]}, 右挤出机={msg.data[2]}, 状态={mapping_data['status']}")
                             if self.mapping_response_callback:
                                 self.thread_pool.submit(self.mapping_response_callback, mapping_data)
                     # 否则，视为普通状态消息
@@ -353,11 +354,6 @@ class FeederCabinetCAN:
         
         self.logger.info("心跳线程已结束")
     
-    def _get_next_seq(self) -> int:
-        """获取下一个序列号 (1-255)"""
-        with self.send_lock:
-            self.seq_number = (self.seq_number % 255) + 1
-            return self.seq_number
     
     def set_status_callback(self, callback: Callable):
         """
@@ -471,10 +467,8 @@ class FeederCabinetCAN:
             return False
             
         try:
-            seq = self._get_next_seq()
-            
-            # 构建8字节消息，根据协议格式
-            data = [cmd_type, seq, extruder, 0, 0, 0, 0, 0]
+            # 构建8字节消息，根据协议格式（不再使用seq）
+            data = [cmd_type, extruder, 0, 0, 0, 0, 0, 0]
             
             msg = can.Message(
                 arbitration_id=self.SEND_ID,
@@ -596,13 +590,13 @@ class FeederCabinetCAN:
             self.logger.error(f"构建或发送挤出机余料状态响应时失败: {str(e)}")
             return False
     
-    def set_feeder_mapping(self, left_extruder: int, right_extruder: int) -> bool:
+    def set_feeder_mapping(self, left_tube_extruder: int, right_tube_extruder: int) -> bool:
         """
         设置料管与挤出机对应关系
         
         Args:
-            left_extruder: 左料管对应的挤出机编号
-            right_extruder: 右料管对应的挤出机编号
+            left_tube_extruder: 左料管对应的挤出机号
+            right_tube_extruder: 右料管对应的挤出机号
             
         Returns:
             bool: 设置是否成功
@@ -612,8 +606,7 @@ class FeederCabinetCAN:
             return False
             
         try:
-            seq = self._get_next_seq()
-            data = [self.CMD_SET_FEEDER_MAPPING, seq, left_extruder, right_extruder, 0x00, 0x00, 0x00, 0x00]
+            data = [self.CMD_SET_FEEDER_MAPPING, left_tube_extruder, right_tube_extruder, 0x00, 0x00, 0x00, 0x00, 0x00]
             
             msg = can.Message(
                 arbitration_id=self.SEND_ID,
@@ -622,7 +615,7 @@ class FeederCabinetCAN:
             )
 
             if self._send_with_retry(msg):
-                self.logger.info(f"已发送料管映射设置: 左料管->挤出机{left_extruder}, 右料管->挤出机{right_extruder}")
+                self.logger.info(f"已发送料管映射设置: 左料管->挤出机{left_tube_extruder}, 右料管->挤出机{right_tube_extruder}")
                 return True
             else:
                 return False
