@@ -375,6 +375,7 @@ class KlipperMonitor:
                             self.logger.info(f"断料传感器 {sensor_name} 状态变化: {'有料' if new_state else '无料'}")
                             
                             # 发送0x0E命令通知送料柜断料状态变化
+                            self.logger.info(f"准备发送0x0E命令通知送料柜状态变化")
                             self._notify_filament_status_change()
                     else:
                         self.logger.debug(f"传感器 {sensor_obj} 数据中没有 'filament_detected' 字段")
@@ -689,6 +690,7 @@ class KlipperMonitor:
         """
         通知送料柜断料状态变化
         """
+        self.logger.info("开始执行状态变化通知")
         try:
             # 根据挤出机到缓冲区的映射构建状态位图
             status_bitmap = 0
@@ -697,10 +699,11 @@ class KlipperMonitor:
             for extruder_index in range(len(self.filament_present)):
                 # 获取对应的缓冲区索引
                 buffer_index = self.extruder_to_buffer.get(extruder_index)
+                self.logger.info(f"处理挤出机 {extruder_index}: 状态={'有料' if self.filament_present[extruder_index] else '无料'}, 缓冲区={buffer_index}")
                 if buffer_index is not None and self.filament_present[extruder_index]:
                     # 在状态位图中设置对应缓冲区的位
                     status_bitmap |= (1 << buffer_index)
-                    self.logger.debug(f"挤出机 {extruder_index} 有料，设置缓冲区 {buffer_index} 位")
+                    self.logger.info(f"挤出机 {extruder_index} 有料，设置缓冲区 {buffer_index} 位")
             
             # 直接调用现有的CAN接口发送0x0E命令
             success = self.can_comm.send_filament_status_response(
@@ -722,7 +725,7 @@ class KlipperMonitor:
                 self.logger.error("发送状态变化通知失败")
                 
         except Exception as e:
-            self.logger.error(f"通知断料状态变化时发生错误: {str(e)}")
+            self.logger.error(f"通知断料状态变化时发生错误: {str(e)}", exc_info=True)
     
     def _check_runout_sensor(self, extruder=0) -> bool:
         """
