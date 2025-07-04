@@ -373,6 +373,9 @@ class KlipperMonitor:
 
                         if old_state != new_state:
                             self.logger.info(f"断料传感器 {sensor_name} 状态变化: {'有料' if new_state else '无料'}")
+                            
+                            # 发送0x0E命令通知送料柜断料状态变化
+                            self._notify_filament_status_change()
                     else:
                         self.logger.debug(f"传感器 {sensor_obj} 数据中没有 'filament_detected' 字段")
         
@@ -681,6 +684,45 @@ class KlipperMonitor:
             
         except Exception as e:
             self.logger.error(f"检查断料状态时发生错误: {str(e)}")
+    
+    def _notify_filament_status_change(self):
+        """
+        通知送料柜断料状态变化
+        """
+        try:
+            # 根据挤出机到缓冲区的映射构建状态位图
+            status_bitmap = 0
+            
+            # 遍历每个挤出机
+            for extruder_index in range(len(self.filament_present)):
+                # 获取对应的缓冲区索引
+                buffer_index = self.extruder_to_buffer.get(extruder_index)
+                if buffer_index is not None and self.filament_present[extruder_index]:
+                    # 在状态位图中设置对应缓冲区的位
+                    status_bitmap |= (1 << buffer_index)
+                    self.logger.debug(f"挤出机 {extruder_index} 有料，设置缓冲区 {buffer_index} 位")
+            
+            # 直接调用现有的CAN接口发送0x0E命令
+            success = self.can_comm.send_filament_status_response(
+                is_valid=True,
+                status_bitmap=status_bitmap
+            )
+            
+            if success:
+                # 构建详细的状态描述
+                status_desc = []
+                for extruder_index in range(len(self.filament_present)):
+                    buffer_index = self.extruder_to_buffer.get(extruder_index)
+                    status = '有料' if self.filament_present[extruder_index] else '无料'
+                    status_desc.append(f"挤出机{extruder_index}->缓冲区{buffer_index}: {status}")
+                
+                self.logger.info(f"状态变化通知已发送，状态位图: 0x{status_bitmap:02X} "
+                               f"({', '.join(status_desc)})")
+            else:
+                self.logger.error("发送状态变化通知失败")
+                
+        except Exception as e:
+            self.logger.error(f"通知断料状态变化时发生错误: {str(e)}")
     
     def _check_runout_sensor(self, extruder=0) -> bool:
         """
