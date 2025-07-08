@@ -84,6 +84,7 @@ class FeederCabinetCAN:
         self.mapping_query_callback: Optional[Callable[[], Coroutine]] = None
         self.mapping_response_callback: Optional[Callable[[Dict], Coroutine]] = None
         self.mapping_set_callback: Optional[Callable[[Dict], Coroutine]] = None
+        self.reconnect_callback: Optional[Callable[[], Coroutine]] = None  # 重连成功回调
         
         # 异步任务和锁
         self.rx_task: Optional[asyncio.Task] = None
@@ -211,6 +212,14 @@ class FeederCabinetCAN:
             while self.auto_reconnect and not self.connected:
                 if await self.connect():
                     self.logger.info("CAN总线重连成功！")
+                    
+                    # 调用重连成功回调
+                    if self.reconnect_callback:
+                        try:
+                            await self.reconnect_callback()
+                        except Exception as e:
+                            self.logger.error(f"执行重连回调时发生错误: {e}", exc_info=True)
+                    
                     return
                 else:
                     self.logger.warning(f"重连失败，将在 {self.reconnect_interval} 秒后重试。")
@@ -397,6 +406,15 @@ class FeederCabinetCAN:
             callback: 料管映射设置回调函数，接收一个映射数据字典
         """
         self.mapping_set_callback = callback
+    
+    def set_reconnect_callback(self, callback: Callable[[], Coroutine]):
+        """
+        设置重连成功回调函数
+        
+        Args:
+            callback: 重连成功回调函数
+        """
+        self.reconnect_callback = callback
     
     async def _send_with_retry(self, msg: 'can.Message', retries: int = 3, retry_delay: float = 0.05) -> bool:
         """

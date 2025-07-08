@@ -352,6 +352,35 @@ class FeederCabinetApp:
         except Exception as e:
             self.logger.error(f"发送打印状态通知时出错: {e}", exc_info=True)
     
+    async def _handle_can_reconnect(self):
+        """处理CAN重连成功事件"""
+        self.logger.info("处理CAN重连成功事件")
+        
+        # 发送当前打印状态和余料状态
+        try:
+            if self.klipper_monitor and self.klipper_monitor.ws_connected:
+                # 获取最新的打印机状态
+                printer_status = self.klipper_monitor.get_printer_status()
+                if printer_status and 'printer_state' in printer_status:
+                    current_state = printer_status['printer_state']
+                    self.logger.info(f"CAN重连后发送最新打印机状态: {current_state}")
+                    await self._send_printer_status_notification(current_state)
+                    
+                    # 如果打印机已经从error恢复，同步系统状态
+                    if current_state in ['standby', 'ready'] and self.state_manager.state == SystemStateEnum.ERROR:
+                        self.logger.info("检测到打印机已从错误状态恢复，同步系统状态")
+                        self.state_manager.transition_to(SystemStateEnum.IDLE)
+                else:
+                    self.logger.warning("CAN重连后无法获取打印机状态")
+                    
+                # 发送余料状态
+                await self._send_filament_status_notification()
+            else:
+                self.logger.warning("Klipper未连接，跳过状态同步")
+                
+        except Exception as e:
+            self.logger.error(f"处理CAN重连事件时发生错误: {e}", exc_info=True)
+    
     async def _handle_feeder_mapping_set(self, mapping_data: Dict[str, Any]):
         """
         处理送料柜发送的料管映射设置命令
@@ -512,6 +541,7 @@ class FeederCabinetApp:
             )
             self.can_comm.set_query_callback(self._handle_filament_status_query)
             self.can_comm.set_mapping_set_callback(self._handle_feeder_mapping_set)
+            self.can_comm.set_reconnect_callback(self._handle_can_reconnect)
             
             # 为CAN通信模块设置logger
             self.can_comm.logger = self.log_manager.get_child_logger(self.logger, "can")
