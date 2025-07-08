@@ -16,69 +16,138 @@
 
 - **操作系统**：Debian 11或兼容系统
 - **Python**：3.7或更高版本
-- **依赖项**：`python-can`、`requests`、`pyyaml`
+- **依赖项**：`python-can`、`requests`、`pyyaml`、`websocket-client`、`websockets`、`aiohttp`
 - **硬件**：具有CAN接口的控制板，如BTT Octopus、SKR等
 - **固件**：Klipper与Moonraker
 
-## 安装步骤
+## 部署步骤
 
-### 1. 安装依赖项
+### 快速部署（推荐）
 
-```bash
-sudo apt update
-sudo apt install -y python3-pip python3-yaml python3-can
-pip3 install python-can requests pyyaml
-```
-
-### 2. 配置CAN接口
-
-```bash
-# 加载CAN模块
-sudo modprobe can
-sudo modprobe can_raw
-
-# 设置CAN接口（请根据实际硬件调整参数）
-sudo ip link set can0 type can bitrate 1000000
-sudo ip link set up can0
-```
-
-添加到系统启动项（/etc/network/interfaces）：
-
-```
-auto can0
-iface can0 inet manual
-    pre-up /sbin/ip link set $IFACE type can bitrate 1000000
-    up /sbin/ifconfig $IFACE up
-    down /sbin/ifconfig $IFACE down
-```
-
-### 3. 安装送料柜自动续料系统
+使用提供的安装脚本可以自动完成大部分配置：
 
 ```bash
 # 克隆代码仓库
 git clone https://github.com/your-username/feeder_cabinet.git
 cd feeder_cabinet
 
-# 安装
-pip3 install -e .
+# 运行安装脚本（需要root权限）
+sudo scripts/install.sh
 ```
 
-### 4. 配置
+安装脚本会自动完成以下操作：
+- 安装系统依赖和Python包
+- 创建Python虚拟环境
+- 配置CAN接口（如果相关文件存在）
+- 复制配置文件到指定目录
+- 创建并启动systemd服务
 
-创建配置目录和默认配置文件：
+### 手动部署
+
+如果需要手动部署或自定义安装，请按以下步骤操作：
+
+#### 1. 安装依赖项
 
 ```bash
-sudo mkdir -p /etc/feeder_cabinet
-sudo cp config/config.yaml.example /etc/feeder_cabinet/config.yaml
+sudo apt update
+sudo apt install -y python3-pip python3-venv python3-yaml python3-can
+```
+
+#### 2. 创建虚拟环境并安装Python包
+
+```bash
+# 创建虚拟环境
+python3 -m venv /home/mingda/feeder_cabinet_venv
+
+# 激活虚拟环境
+source /home/mingda/feeder_cabinet_venv/bin/activate
+
+# 安装Python包
+pip install --upgrade pip
+pip install python-can requests pyyaml websocket-client websockets aiohttp
+
+# 安装项目
+pip install -e .
+
+# 退出虚拟环境
+deactivate
+```
+
+#### 3. 配置CAN接口
+
+CAN接口配置文件位于`scripts/`目录下：
+- `can1`: CAN接口配置文件
+- `can_rename.sh`: CAN设备重命名脚本
+- `75-can-custom.rules`: udev规则文件
+
+复制这些文件到系统目录：
+
+```bash
+sudo cp scripts/can1 /etc/network/interfaces.d/
+sudo cp scripts/can_rename.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/can_rename.sh
+sudo cp scripts/75-can-custom.rules /etc/udev/rules.d/
+
+# 重载udev规则
+sudo udevadm control --reload
+sudo udevadm trigger
+```
+
+#### 4. 配置应用程序
+
+创建配置目录并复制配置文件：
+
+```bash
+# 创建配置目录
+sudo mkdir -p /home/mingda/printer_data/config
+sudo mkdir -p /home/mingda/printer_data/logs
+
+# 复制配置文件
+sudo cp config/config.yaml /home/mingda/printer_data/config/
+
+# 设置权限
+sudo chown -R mingda:mingda /home/mingda/printer_data/config
+sudo chown -R mingda:mingda /home/mingda/printer_data/logs
 ```
 
 根据需要编辑配置文件：
 
 ```bash
-sudo nano /etc/feeder_cabinet/config.yaml
+nano /home/mingda/printer_data/config/config.yaml
 ```
 
-### 5. 为Moonraker创建自定义组件
+#### 5. 配置系统服务
+
+创建systemd服务文件：
+
+```bash
+sudo tee /etc/systemd/system/feeder_cabinet.service > /dev/null << EOF
+[Unit]
+Description=feeder cabinet auto feed system
+After=network.target
+After=klipper.service
+After=moonraker.service
+
+[Service]
+Type=simple
+User=mingda
+ExecStart=/home/mingda/feeder_cabinet_venv/bin/python /path/to/feeder_cabinet/src/feeder_cabinet/main.py -c /home/mingda/printer_data/config/config.yaml
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 重载systemd配置
+sudo systemctl daemon-reload
+
+# 启用并启动服务
+sudo systemctl enable feeder_cabinet
+sudo systemctl start feeder_cabinet
+```
+
+### 为Moonraker配置更新管理器
 
 编辑Moonraker配置文件（通常为`~/printer_data/config/moonraker.conf`），添加：
 
@@ -92,18 +161,42 @@ managed_services: feeder_cabinet
 install_script: scripts/install.sh
 ```
 
-### 6. 配置系统服务
-
-```bash
-sudo cp scripts/feeder_cabinet.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable feeder_cabinet
-sudo systemctl start feeder_cabinet
-```
-
-### 7. 添加Klipper宏
+### 添加Klipper宏
 
 编辑你的Klipper配置文件（通常为`printer.cfg`），添加提供的G-code宏。你可以从`src/feeder_cabinet/gcode_macros.py`中复制相关宏定义。
+
+### 验证部署
+
+部署完成后，请执行以下步骤验证系统是否正常工作：
+
+1. **检查服务状态**：
+   ```bash
+   sudo systemctl status feeder_cabinet
+   ```
+   
+2. **查看日志**：
+   ```bash
+   # 查看实时日志
+   sudo journalctl -u feeder_cabinet -f
+   
+   # 查看应用日志
+   tail -f /home/mingda/printer_data/logs/feeder_cabinet.log
+   ```
+
+3. **验证CAN接口**：
+   ```bash
+   # 检查CAN接口状态
+   ip link show can1
+   
+   # 监控CAN总线消息
+   candump can1 | grep -E "(10A|10B)"
+   ```
+
+4. **测试通信**：
+   在Klipper控制台中运行：
+   ```
+   QUERY_FEEDER_CABINET
+   ```
 
 ## 使用方法
 
@@ -185,29 +278,55 @@ logging:
 
 ## 故障排除
 
-### 常见问题
+### 部署相关问题
+
+1. **安装脚本执行失败**
+   - 确保使用root权限运行：`sudo scripts/install.sh`
+   - 检查系统是否满足所有依赖要求
+   - 查看脚本输出的错误信息
+
+2. **服务无法启动**
+   - 检查Python虚拟环境是否正确创建
+   - 验证配置文件路径是否正确
+   - 查看服务日志：`sudo journalctl -u feeder_cabinet -n 50`
+
+3. **Python模块导入错误**
+   - 确保虚拟环境中安装了所有依赖
+   - 检查PYTHONPATH设置
+   - 尝试重新安装：`sudo scripts/install.sh`
+
+### 运行时问题
 
 1. **CAN总线连接失败**
-   - 检查CAN接口是否正确配置
+   - 检查CAN接口是否正确配置：`ip link show can1`
    - 确认硬件连接是否正确
+   - 验证udev规则是否生效
    - 查看日志确认错误信息
 
 2. **握手失败**
    - 确认送料柜控制器已启动
-   - 检查CAN总线速率是否匹配
+   - 检查CAN总线速率是否匹配（默认1Mbps）
    - 检查送料柜固件是否支持该握手协议
+   - 使用`candump`监控CAN消息
 
 3. **自动续料不工作**
    - 确认已启用断料检测
-   - 检查打印机状态是否正确传递
+   - 检查Moonraker连接状态
+   - 验证断料传感器配置
    - 查看日志确认是否有错误信息
+
+4. **KlipperMonitor连接问题**
+   - 检查Moonraker URL配置是否正确
+   - 确认Moonraker服务正在运行
+   - 验证网络连接和防火墙设置
 
 ### 日志文件
 
 主要日志文件位于：
 
-- 系统日志：`/var/log/feeder_cabinet/feeder_cabinet.log`
+- 应用日志：`/home/mingda/printer_data/logs/feeder_cabinet.log`
 - Systemd日志：`journalctl -u feeder_cabinet`
+- CAN重命名日志：`/home/mingda/tmp/can_rename.log`
 
 ## 开发者信息
 
