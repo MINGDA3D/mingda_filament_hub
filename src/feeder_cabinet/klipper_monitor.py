@@ -158,11 +158,11 @@ class KlipperMonitor:
             self.print_stats.update(status['print_stats'])
             new_state = self.print_stats.get('state')
             if new_state and new_state != self.printer_state:
+                old_state = self.printer_state
                 self.printer_state = new_state
-                self.logger.info(f"打印机状态变化: {self.printer_state}")
-                if self.printer_state in self.state_map:
-                    cmd = self.state_map[self.printer_state]
-                    asyncio.create_task(self.can_comm.send_message(cmd)) # 使用create_task避免阻塞
+                self.logger.info(f"打印机状态变化: {old_state} -> {self.printer_state}")
+                # 移除直接发送CAN消息的代码，避免在CAN断开时导致异常
+                # 状态通知应该由main.py的_handle_klipper_status_update处理
         
         if 'toolhead' in status:
             self.toolhead_info.update(status['toolhead'])
