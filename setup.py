@@ -30,6 +30,9 @@ setup(
         "python-can>=4.0.0",
         "requests>=2.25.0",
         "pyyaml>=5.1.0",
+        "aiohttp>=3.8.0",
+        "websockets>=10.0",
+        "websocket-client>=1.0.0",
     ],
     entry_points={
         "console_scripts": [

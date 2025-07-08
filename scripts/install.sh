@@ -39,7 +39,7 @@ python3 -m venv "$VENV_DIR"
 echo "正在安装Python依赖项..."
 source "$VENV_DIR/bin/activate"
 pip install --upgrade pip
-pip install python-can requests pyyaml websocket-client websockets
+pip install python-can requests pyyaml websocket-client websockets aiohttp
 cd "$PROJECT_DIR"
 pip install -e .
 deactivate
