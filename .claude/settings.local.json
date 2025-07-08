@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python3:*)",
       "Bash(pip3 install:*)",
-      "Bash(rg:*)"
+      "Bash(rg:*)",
+      "Bash(find:*)"
     ],
     "deny": []
   }
