@@ -296,6 +296,23 @@ class FeederCabinetApp:
         except Exception as e:
             self.logger.error(f"发送余料状态通知时出错: {e}", exc_info=True)
     
+    async def _check_can_interface_status(self):
+        """检查CAN接口的系统状态"""
+        import subprocess
+        try:
+            # 使用ip命令检查接口状态
+            result = subprocess.run(['ip', 'link', 'show', 'can1'], 
+                                  capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                self.logger.debug(f"CAN接口状态: {result.stdout.strip()}")
+                return True
+            else:
+                self.logger.error(f"CAN接口不存在: {result.stderr.strip()}")
+                return False
+        except Exception as e:
+            self.logger.error(f"检查CAN接口状态失败: {e}")
+            return False
+    
     async def _send_printer_status_notification(self, status: str):
         """主动发送打印机状态通知给送料柜"""
         if not self.can_comm or not self.can_comm.connected:
@@ -316,8 +333,19 @@ class FeederCabinetApp:
             
             cmd = status_mapping.get(status)
             if cmd is not None:
+                # 如果是error命令，检查CAN接口状态
+                if status == 'error':
+                    self.logger.warning("即将发送error状态，先检查CAN接口")
+                    await self._check_can_interface_status()
+                
                 self.logger.info(f"主动发送打印状态通知给送料柜: {status} -> CMD 0x{cmd:02X}")
                 await self.can_comm.send_message(cmd)
+                
+                # 发送error后再次检查
+                if status == 'error':
+                    await asyncio.sleep(0.5)
+                    self.logger.warning("已发送error状态，再次检查CAN接口")
+                    await self._check_can_interface_status()
             else:
                 self.logger.warning(f"未知的打印状态: {status}")
                 

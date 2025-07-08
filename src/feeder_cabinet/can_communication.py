@@ -313,6 +313,14 @@ class FeederCabinetCAN:
             except can.CanError as e:
                 self.logger.error(f"接收消息时发生CAN错误: {e}")
                 self.connected = False
+                
+                # 记录更多诊断信息
+                error_str = str(e).lower()
+                if "no such device" in error_str:
+                    self.logger.error("CAN设备已消失！可能是硬件断开或驱动问题")
+                elif "network is down" in error_str:
+                    self.logger.error("CAN网络已关闭！可能是接口被禁用")
+                
                 asyncio.create_task(self.reconnect())
                 return
             except asyncio.CancelledError:
