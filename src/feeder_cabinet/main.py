@@ -293,6 +293,34 @@ class FeederCabinetApp:
         except Exception as e:
             self.logger.error(f"发送余料状态通知时出错: {e}", exc_info=True)
     
+    async def _send_printer_status_notification(self, status: str):
+        """主动发送打印机状态通知给送料柜"""
+        if not self.can_comm or not self.can_comm.connected:
+            self.logger.warning("CAN通信未连接，无法发送打印状态通知")
+            return
+            
+        try:
+            # 映射Klipper状态到CAN命令
+            status_mapping = {
+                'printing': self.can_comm.CMD_PRINTING,
+                'paused': self.can_comm.CMD_PRINT_PAUSE,
+                'complete': self.can_comm.CMD_PRINT_COMPLETE,
+                'cancelled': self.can_comm.CMD_PRINT_CANCEL,
+                'standby': self.can_comm.CMD_PRINTER_IDLE,
+                'ready': self.can_comm.CMD_PRINTER_IDLE,
+                'error': self.can_comm.CMD_PRINTER_ERROR
+            }
+            
+            cmd = status_mapping.get(status)
+            if cmd is not None:
+                self.logger.info(f"主动发送打印状态通知给送料柜: {status} -> CMD 0x{cmd:02X}")
+                await self.can_comm.send_message(cmd)
+            else:
+                self.logger.warning(f"未知的打印状态: {status}")
+                
+        except Exception as e:
+            self.logger.error(f"发送打印状态通知时出错: {e}", exc_info=True)
+    
     async def _handle_feeder_mapping_set(self, mapping_data: Dict[str, Any]):
         """
         处理送料柜发送的料管映射设置命令
@@ -333,6 +361,10 @@ class FeederCabinetApp:
             # 仅在状态实际改变时记录日志和转换
             if klipper_state and klipper_state != self.klipper_monitor.printer_state:
                 self.logger.debug(f"Klipper状态更新: {klipper_state}")
+                
+                # 主动发送打印状态通知给送料柜
+                asyncio.create_task(self._send_printer_status_notification(klipper_state))
+                
                 if klipper_state == 'printing' and self.state_manager.state == SystemStateEnum.IDLE:
                     self.state_manager.transition_to(SystemStateEnum.PRINTING)
                 elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING]:
@@ -500,6 +532,12 @@ class FeederCabinetApp:
                     self.logger.info("尝试重新连接CAN总线...")
                     if await self.can_comm.connect():
                         self.logger.info("CAN总线重连成功")
+                        
+                        # 发送当前打印状态和余料状态
+                        if self.klipper_monitor and self.klipper_monitor.printer_state:
+                            await self._send_printer_status_notification(self.klipper_monitor.printer_state)
+                        await self._send_filament_status_notification()
+                        
                         break
                     else:
                         self.logger.warning(f"CAN总线重连失败，{reconnect_interval}秒后重试")
@@ -533,6 +571,10 @@ class FeederCabinetApp:
                 self.logger.error("初次连接CAN总线失败，将启动自动重连任务")
                 # 启动CAN自动重连任务
                 asyncio.create_task(self._can_reconnect_task())
+            else:
+                # CAN连接成功，发送初始状态
+                self.logger.info("CAN连接成功，发送初始状态给送料柜")
+                await self.can_comm.send_message(self.can_comm.CMD_PRINTER_IDLE)
                 
             # 连接Klipper，但不将其视为致命错误
             if not await self.klipper_monitor.connect():
@@ -540,6 +582,20 @@ class FeederCabinetApp:
                 # 程序继续运行，依赖后台重连
             else:
                 self.logger.info("成功连接到Klipper。")
+                
+                # 如果CAN已连接，发送当前打印状态和余料状态
+                if self.can_comm and self.can_comm.connected:
+                    # 等待一下让Klipper状态稳定
+                    await asyncio.sleep(1)
+                    
+                    # 发送当前打印状态
+                    printer_status = await self.klipper_monitor.get_printer_status()
+                    if printer_status and 'print_stats' in printer_status:
+                        klipper_state = printer_status['print_stats'].get('state', 'standby')
+                        await self._send_printer_status_notification(klipper_state)
+                    
+                    # 发送余料状态
+                    await self._send_filament_status_notification()
 
             # 启动Klipper监控
             update_interval = self.config['klipper']['update_interval']
