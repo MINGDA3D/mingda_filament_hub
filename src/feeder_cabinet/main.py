@@ -425,6 +425,11 @@ class FeederCabinetApp:
                 status = 0 if save_success else 1
                 await self.can_comm.send_feeder_mapping_response(left_tube, right_tube, status)
                 
+                # 映射设置成功后，重新发送余料状态以保持信息同步
+                if save_success:
+                    self.logger.info("料管映射设置成功，重新发送余料状态信息")
+                    await self._send_filament_status_notification()
+                
         except Exception as e:
             self.logger.error(f"处理料管映射设置时发生错误: {str(e)}", exc_info=True)
             if self.can_comm:
