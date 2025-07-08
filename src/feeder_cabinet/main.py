@@ -87,6 +87,9 @@ class FeederCabinetApp:
         
         # 配置文件路径
         self.config_path = config_path
+        
+        # 断料传感器状态缓存
+        self._last_filament_status = {}
     
     
     
@@ -250,6 +253,46 @@ class FeederCabinetApp:
             if self.can_comm:
                 await self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
     
+    async def _send_filament_status_notification(self):
+        """主动发送余料状态通知给送料柜（断料传感器状态变化时调用）"""
+        self.logger.info("主动发送余料状态通知给送料柜")
+        
+        if not self.klipper_monitor:
+            self.logger.error("KlipperMonitor 未初始化，无法发送状态通知")
+            return
+            
+        if not self.klipper_monitor.ws_connected:
+            self.logger.warning("Klipper WebSocket未连接，无法发送状态通知")
+            return
+            
+        if not self.can_comm or not self.can_comm.connected:
+            self.logger.warning("CAN通信未连接，无法发送状态通知")
+            return
+            
+        try:
+            sensor_states = self.klipper_monitor.get_filament_status()
+            extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
+            
+            status_bitmap = 0
+            
+            for sensor_info in self.config.get('filament_runout', {}).get('sensors', []):
+                sensor_name = sensor_info.get('name')
+                extruder_index = sensor_info.get('extruder')
+                
+                if sensor_name is None or extruder_index is None:
+                    continue
+                    
+                if sensor_states.get(sensor_name, False):
+                    tube_index = extruder_mapping.get(extruder_index)
+                    if tube_index is not None:
+                        status_bitmap |= (1 << tube_index)
+                        
+            self.logger.info(f"主动通知余料状态。Bitmap: {bin(status_bitmap)}")
+            await self.can_comm.send_filament_status_response(is_valid=True, status_bitmap=status_bitmap)
+            
+        except Exception as e:
+            self.logger.error(f"发送余料状态通知时出错: {e}", exc_info=True)
+    
     async def _handle_feeder_mapping_set(self, mapping_data: Dict[str, Any]):
         """
         处理送料柜发送的料管映射设置命令
@@ -300,6 +343,27 @@ class FeederCabinetApp:
                     self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Klipper reported an error")
 
         # 解析断料传感器状态
+        filament_status_changed = False
+        
+        # 检查所有断料传感器状态变化
+        for sensor_obj_name in self.klipper_monitor.filament_sensor_objects:
+            if sensor_obj_name in status and 'filament_detected' in status[sensor_obj_name]:
+                current_status = status[sensor_obj_name]['filament_detected']
+                # 检查状态是否变化
+                if not hasattr(self, '_last_filament_status'):
+                    self._last_filament_status = {}
+                
+                last_status = self._last_filament_status.get(sensor_obj_name)
+                if last_status is None or last_status != current_status:
+                    self._last_filament_status[sensor_obj_name] = current_status
+                    filament_status_changed = True
+                    self.logger.info(f"传感器 {sensor_obj_name} 状态变化: {last_status} -> {current_status}")
+        
+        # 如果断料传感器状态有变化，主动发送通知
+        if filament_status_changed:
+            asyncio.create_task(self._send_filament_status_notification())
+        
+        # 处理打印中的断料事件
         if self.state_manager.state == SystemStateEnum.PRINTING:
             for i, sensor_obj_name in enumerate(self.klipper_monitor.filament_sensor_objects):
                 if sensor_obj_name in status and 'filament_detected' in status[sensor_obj_name]:
