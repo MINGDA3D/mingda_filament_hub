@@ -366,16 +366,11 @@ class FeederCabinetApp:
                 
                 self.logger.info(f"状态检查 - 本地缓存: {old_cached_state}, Klipper缓存: {klipper_cached_state}")
                 
-                # 如果本地缓存是error，但Klipper缓存不是error，说明可能存在状态不同步
-                if old_cached_state == 'error' and klipper_cached_state != 'error':
-                    self.logger.warning("检测到可能的状态不同步，重新订阅WebSocket")
-                    await self.klipper_monitor.resubscribe_objects()
-                    # 等待状态更新
-                    await asyncio.sleep(1.0)
-                else:
-                    # 主动查询一次最新状态
-                    await self.klipper_monitor._query_current_status()
-                    await asyncio.sleep(0.5)
+                # CAN重连后总是重新订阅，确保状态更新正常
+                self.logger.info("CAN重连后重新订阅WebSocket以确保状态同步")
+                await self.klipper_monitor.resubscribe_objects()
+                # 等待状态更新
+                await asyncio.sleep(1.0)
                 
                 # 获取最新的打印机状态
                 printer_status = self.klipper_monitor.get_printer_status()
@@ -748,9 +743,12 @@ class FeederCabinetApp:
                     
                     # 发送当前打印状态
                     printer_status = self.klipper_monitor.get_printer_status()
-                    if printer_status and 'print_stats' in printer_status:
-                        klipper_state = printer_status['print_stats'].get('state', 'standby')
+                    if printer_status and 'printer_state' in printer_status:
+                        klipper_state = printer_status['printer_state']
+                        self.logger.info(f"初始化时发送打印机状态: {klipper_state}")
                         await self._send_printer_status_notification(klipper_state)
+                        # 更新缓存
+                        self._last_printer_state = klipper_state
                     
                     # 发送余料状态
                     await self._send_filament_status_notification()
