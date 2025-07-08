@@ -1,0 +1,7 @@
+# 绑定第一个模块到can0（假设其序列号为SN001）
+#KERNEL=="can[0-9]*", SUBSYSTEM=="net", ACTION=="add", ATTRS{serial}=="4d4400000005", PROGRAM="/usr/local/bin/can_rename.sh %k can0"
+#, RUN+="/usr/local/bin/cleanup_can0.sh", NAME="can0"
+# 绑定第二个模块到can1（假设其序列号为SN002）
+#SUBSYSTEM=="usb", ACTION=="add", ATTRS{idVendor}=="4d44", ATTRS{idProduct}=="0002", NAME="can1"
+KERNEL=="can[0-9]*", SUBSYSTEM=="net", ACTION=="add", ATTRS{serial}=="4d4400000009", PROGRAM="/usr/local/bin/can_rename.sh %k can1"
+#, RUN+="/usr/local/bin/cleanup_can1.sh", NAME="can1"

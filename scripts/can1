@@ -1,0 +1,4 @@
+allow-hotplug can1
+iface can1 can static
+	bitrate 1000000
+	up ifconfig $IFACE txqueuelen 1024

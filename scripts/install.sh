@@ -65,6 +65,40 @@ chmod -R 755 "$LOG_DIR"
 chown -R mingda:mingda "$VENV_DIR"
 chmod -R 755 "$VENV_DIR"
 
+# 配置CAN接口
+echo "正在配置CAN接口..."
+
+# CAN相关文件
+CAN_NAME="$SCRIPT_DIR/can1"
+SH_NAME="$SCRIPT_DIR/can_rename.sh"
+RU_NAME="$SCRIPT_DIR/75-can-custom.rules"
+
+# 检查CAN配置文件是否存在
+if [[ -f "$CAN_NAME" && -f "$SH_NAME" && -f "$RU_NAME" ]]; then
+    echo "CAN配置文件存在，继续安装..."
+    
+    # 复制CAN配置文件
+    echo "正在复制CAN配置文件..."
+    cp "$CAN_NAME" /etc/network/interfaces.d/
+    cp "$SH_NAME" /usr/local/bin/
+    chmod +x /usr/local/bin/can_rename.sh
+    cp "$RU_NAME" /etc/udev/rules.d/
+    
+    # 重载udev规则
+    echo "正在重载udev规则..."
+    udevadm control --reload
+    udevadm trigger
+    
+    echo "CAN接口配置完成"
+else
+    echo "警告：CAN配置文件缺失，跳过CAN接口配置"
+    echo "缺失的文件："
+    [[ ! -f "$CAN_NAME" ]] && echo "  - $CAN_NAME"
+    [[ ! -f "$SH_NAME" ]] && echo "  - $SH_NAME"
+    [[ ! -f "$RU_NAME" ]] && echo "  - $RU_NAME"
+    echo "您可以稍后手动配置CAN接口"
+fi
+
 # 创建systemd服务文件
 echo "正在创建systemd服务文件..."
 cat > "$SERVICE_FILE" << EOF
@@ -88,19 +122,6 @@ EOF
 # 重载systemd配置
 echo "正在重载systemd配置..."
 systemctl daemon-reload
-
-# 配置CAN接口（如果未配置）
-# echo "正在检查CAN接口配置..."
-# if ! grep -q "auto can1" /etc/network/interfaces; then
-#   echo "配置CAN接口..."
-#   cat >> /etc/network/interfaces << EOF
-# # CAN总线配置
-# auto can0
-# EOF
-#   echo "CAN接口已配置到 /etc/network/interfaces"
-# else
-#   echo "CAN接口已配置，跳过..."
-# fi
 
 # 启用并启动服务
 echo "启用服务..."
@@ -127,4 +148,4 @@ echo "请确保将Klipper宏添加到打印机配置中"
 echo "宏定义可在 $PROJECT_DIR/src/feeder_cabinet/gcode_macros.py 中找到"
 echo
 
-exit 0 
+exit 0
