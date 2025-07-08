@@ -90,6 +90,9 @@ class FeederCabinetApp:
         
         # 断料传感器状态缓存
         self._last_filament_status = {}
+        
+        # 打印机状态缓存
+        self._last_printer_state = None
     
     
     
@@ -359,8 +362,9 @@ class FeederCabinetApp:
         if 'print_stats' in status:
             klipper_state = status['print_stats'].get('state')
             # 仅在状态实际改变时记录日志和转换
-            if klipper_state and klipper_state != self.klipper_monitor.printer_state:
-                self.logger.debug(f"Klipper状态更新: {klipper_state}")
+            if klipper_state and klipper_state != self._last_printer_state:
+                self.logger.debug(f"Klipper状态更新: {self._last_printer_state} -> {klipper_state}")
+                self._last_printer_state = klipper_state
                 
                 # 主动发送打印状态通知给送料柜
                 asyncio.create_task(self._send_printer_status_notification(klipper_state))
@@ -642,7 +646,7 @@ class FeederCabinetApp:
             
         # 保持程序运行
         try:
-            while self.state_manager.state not in [SystemStateEnum.DISCONNECTED, SystemStateEnum.ERROR]:
+            while self.state_manager.state != SystemStateEnum.DISCONNECTED:
                 await asyncio.sleep(1)
         except (KeyboardInterrupt, asyncio.CancelledError):
             self.logger.info("接收到终止信号，正在停止...")
