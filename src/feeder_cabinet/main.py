@@ -359,6 +359,24 @@ class FeederCabinetApp:
         # 发送当前打印状态和余料状态
         try:
             if self.klipper_monitor and self.klipper_monitor.ws_connected:
+                # 获取当前缓存的状态
+                old_cached_state = self._last_printer_state
+                printer_status = self.klipper_monitor.get_printer_status()
+                klipper_cached_state = printer_status.get('printer_state') if printer_status else None
+                
+                self.logger.info(f"状态检查 - 本地缓存: {old_cached_state}, Klipper缓存: {klipper_cached_state}")
+                
+                # 如果本地缓存是error，但Klipper缓存不是error，说明可能存在状态不同步
+                if old_cached_state == 'error' and klipper_cached_state != 'error':
+                    self.logger.warning("检测到可能的状态不同步，重新订阅WebSocket")
+                    await self.klipper_monitor.resubscribe_objects()
+                    # 等待状态更新
+                    await asyncio.sleep(1.0)
+                else:
+                    # 主动查询一次最新状态
+                    await self.klipper_monitor._query_current_status()
+                    await asyncio.sleep(0.5)
+                
                 # 获取最新的打印机状态
                 printer_status = self.klipper_monitor.get_printer_status()
                 if printer_status and 'printer_state' in printer_status:
@@ -421,9 +439,12 @@ class FeederCabinetApp:
         """处理来自KlipperMonitor的状态更新，并驱动状态机"""
         try:
             # 记录收到的状态更新
+            self.logger.debug(f"收到状态更新，包含的键: {list(status.keys())}")
             if 'print_stats' in status:
                 self.logger.debug(f"收到Klipper状态更新: print_stats={status.get('print_stats', {}).get('state')}")
                 self.logger.debug(f"当前缓存的打印机状态: {self._last_printer_state}")
+            else:
+                self.logger.debug("状态更新中没有print_stats")
             
             # 解析打印机状态
             if 'print_stats' in status:
@@ -606,6 +627,44 @@ class FeederCabinetApp:
             self.state_manager.transition_to(SystemStateEnum.ERROR, error=str(e))
             return False
     
+    async def _state_sync_check_task(self):
+        """定期检查状态同步的任务"""
+        self.logger.info("启动状态同步检查任务")
+        check_interval = 60  # 每60秒检查一次
+        
+        while self.state_manager.state != SystemStateEnum.DISCONNECTED:
+            try:
+                await asyncio.sleep(check_interval)
+                
+                if self.klipper_monitor and self.klipper_monitor.ws_connected:
+                    # 获取Klipper内部缓存的状态
+                    printer_status = self.klipper_monitor.get_printer_status()
+                    klipper_state = printer_status.get('printer_state') if printer_status else None
+                    
+                    # 如果两个缓存不一致，说明可能存在同步问题
+                    if klipper_state and klipper_state != self._last_printer_state:
+                        self.logger.warning(f"检测到状态不同步 - 本地: {self._last_printer_state}, Klipper: {klipper_state}")
+                        
+                        # 重新订阅并查询状态
+                        await self.klipper_monitor.resubscribe_objects()
+                        await asyncio.sleep(1.0)
+                        
+                        # 重新获取状态并发送
+                        printer_status = self.klipper_monitor.get_printer_status()
+                        if printer_status and 'printer_state' in printer_status:
+                            current_state = printer_status['printer_state']
+                            self.logger.info(f"状态同步后发送最新状态: {current_state}")
+                            await self._send_printer_status_notification(current_state)
+                            self._last_printer_state = current_state
+                            
+            except asyncio.CancelledError:
+                self.logger.info("状态同步检查任务被取消")
+                break
+            except Exception as e:
+                self.logger.error(f"状态同步检查任务异常: {str(e)}", exc_info=True)
+                
+        self.logger.info("状态同步检查任务结束")
+    
     async def _can_reconnect_task(self):
         """CAN自动重连任务"""
         self.logger.info("启动CAN自动重连任务")
@@ -699,6 +758,9 @@ class FeederCabinetApp:
             # 启动Klipper监控
             update_interval = self.config['klipper']['update_interval']
             self.klipper_monitor.start_monitoring(interval=update_interval)
+            
+            # 启动状态同步检查任务
+            asyncio.create_task(self._state_sync_check_task())
             
             # 标记为运行中
             self.state_manager.transition_to(SystemStateEnum.IDLE)

@@ -99,6 +99,10 @@ class KlipperMonitor:
                 self.ws_task = asyncio.create_task(self._ws_handler())
                 
                 await self._subscribe_objects()
+                
+                # 主动查询当前状态
+                await self._query_current_status()
+                
                 return True
             except (websockets.exceptions.InvalidURI, websockets.exceptions.WebSocketException, OSError) as e:
                 self.logger.error(f"连接WebSocket失败: {e}")
@@ -134,12 +138,17 @@ class KlipperMonitor:
         try:
             data = json.loads(message)
             
+            # 调试日志：记录收到的原始WebSocket消息
+            self.logger.debug(f"收到WebSocket消息: {json.dumps(data, ensure_ascii=False)[:500]}...")  # 限制长度避免日志过大
+            
             if 'method' in data and data['method'] == 'notify_status_update':
                 status_data = data['params'][0]
+                self.logger.debug(f"收到状态更新通知，包含的对象: {list(status_data.keys())}")
                 await self._handle_status_update(status_data)
             
             elif 'result' in data and 'status' in data['result']:
                 status_data = data['result']['status']
+                self.logger.debug(f"收到订阅响应，包含的对象: {list(status_data.keys())}")
                 await self._handle_status_update(status_data)
                 
         except json.JSONDecodeError:
@@ -149,14 +158,26 @@ class KlipperMonitor:
 
     async def _handle_status_update(self, status):
         """处理状态更新数据, 并通过回调上报"""
+        # 调试日志：记录收到的所有状态更新
+        self.logger.debug(f"处理状态更新，包含的键: {list(status.keys())}")
+        
         # 调用状态回调，将原始数据上报
         for callback in self.status_callbacks:
             asyncio.create_task(callback(status))
 
         # --- 以下为内部状态缓存，仅为get_printer_status提供快照 ---
         if 'print_stats' in status:
+            # 调试日志：详细记录print_stats的内容
+            self.logger.debug(f"print_stats更新前: {self.print_stats}")
+            self.logger.debug(f"print_stats更新内容: {status['print_stats']}")
+            
             self.print_stats.update(status['print_stats'])
             new_state = self.print_stats.get('state')
+            
+            # 调试日志：记录状态变化详情
+            self.logger.debug(f"print_stats更新后: {self.print_stats}")
+            self.logger.debug(f"当前printer_state: {self.printer_state}, 新state: {new_state}")
+            
             if new_state and new_state != self.printer_state:
                 old_state = self.printer_state
                 self.printer_state = new_state
@@ -165,21 +186,64 @@ class KlipperMonitor:
                 # 状态通知应该由main.py的_handle_klipper_status_update处理
         
         if 'toolhead' in status:
+            self.logger.debug(f"toolhead更新: {status['toolhead']}")
             self.toolhead_info.update(status['toolhead'])
         
         if 'extruder' in status:
+            self.logger.debug(f"extruder更新: {status['extruder']}")
             self.extruder_info.update(status['extruder'])
 
         if 'extruder1' in status:
+            self.logger.debug(f"extruder1更新: {status['extruder1']}")
             self.extruder1_info.update(status['extruder1'])
 
         for i, sensor_obj in enumerate(self.filament_sensor_objects):
             if sensor_obj in status and "filament_detected" in status[sensor_obj]:
                 sensor_name = self.filament_sensor_names[i]
                 new_state = status[sensor_obj]["filament_detected"]
+                self.logger.debug(f"断料传感器 {sensor_name} 状态: {'有料' if new_state else '无料'} (原始数据: {status[sensor_obj]})")
                 if self.filament_sensors_status.get(sensor_name) != new_state:
                     self.logger.info(f"断料传感器 {sensor_name} 状态变化: {'有料' if new_state else '无料'}")
                 self.filament_sensors_status[sensor_name] = new_state
+    
+    async def _query_current_status(self):
+        """主动查询当前打印机状态"""
+        if not self.ws_connected:
+            self.logger.error("WebSocket未连接，无法查询状态")
+            return
+            
+        try:
+            # 查询所有订阅的对象
+            query_request = {
+                "jsonrpc": "2.0", 
+                "method": "printer.objects.query",
+                "params": {
+                    "objects": {
+                        "print_stats": None,
+                        "toolhead": None,
+                        "extruder": None,
+                        "extruder1": None
+                    }
+                },
+                "id": self._get_next_request_id()
+            }
+            
+            self.logger.info("主动查询当前打印机状态")
+            await self.ws.send(json.dumps(query_request))
+            
+        except Exception as e:
+            self.logger.error(f"查询打印机状态时发生错误: {str(e)}")
+    
+    async def resubscribe_objects(self):
+        """重新订阅对象（用于状态同步问题时）"""
+        if not self.ws_connected:
+            self.logger.error("WebSocket未连接，无法重新订阅")
+            return
+            
+        self.logger.info("重新订阅Klipper对象以同步状态")
+        await self._subscribe_objects()
+        # 订阅后立即查询一次当前状态
+        await self._query_current_status()
     
     async def _subscribe_objects(self):
         """订阅Klipper对象状态"""
@@ -195,12 +259,19 @@ class KlipperMonitor:
             }
             for sensor_obj in self.filament_sensor_objects:
                 objects_dict[sensor_obj] = None
+            
+            # 调试日志：记录要订阅的对象
+            self.logger.debug(f"准备订阅的对象列表: {json.dumps(objects_dict, ensure_ascii=False)}")
                 
             subscribe_request = {
                 "jsonrpc": "2.0", "method": "printer.objects.subscribe",
                 "params": {"objects": objects_dict},
                 "id": self._get_next_request_id()
             }
+            
+            # 调试日志：记录完整的订阅请求
+            self.logger.debug(f"发送订阅请求: {json.dumps(subscribe_request, ensure_ascii=False)}")
+            
             await self.ws.send(json.dumps(subscribe_request))
             self.logger.info("已发送WebSocket订阅请求")
         except websockets.exceptions.ConnectionClosed:
