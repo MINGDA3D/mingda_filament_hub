@@ -234,11 +234,12 @@ class FeederCabinetCAN:
             self.logger.info(f"已发送握手消息: ID=0x{self.HANDSHAKE_SEND_ID:03X}, 数据={[hex(x) for x in self.HANDSHAKE_DATA]}")
             
             # 等待握手响应，超时5秒
+            reader = can.AsyncBufferedReader()
+            notifier = can.Notifier(self.bus, [reader])
+            
             try:
-                reader = can.AsyncBufferedReader()
-                notifier = can.Notifier(self.bus, [reader], timeout=5.0)
-                
-                msg = await reader.get_message()
+                # 使用asyncio.wait_for设置超时
+                msg = await asyncio.wait_for(reader.get_message(), timeout=5.0)
 
                 if msg and msg.arbitration_id == self.HANDSHAKE_RECEIVE_ID:
                     self.logger.debug(f"收到握手响应: ID=0x{msg.arbitration_id:03X}, 数据={[hex(x) for x in msg.data]}")
@@ -247,13 +248,17 @@ class FeederCabinetCAN:
                         self.logger.info("收到正确的握手响应")
                         notifier.stop()
                         return True
+                    else:
+                        self.logger.error(f"收到错误的握手响应数据: {[hex(x) for x in response_data]}")
+                else:
+                    self.logger.error(f"收到非握手响应消息或无响应")
                 
-                self.logger.error(f"收到错误的握手响应或无响应")
                 notifier.stop()
                 return False
 
             except asyncio.TimeoutError:
-                self.logger.error("握手超时")
+                self.logger.error("握手超时 - 5秒内未收到响应")
+                notifier.stop()
                 return False
             
         except can.CanError as e:
