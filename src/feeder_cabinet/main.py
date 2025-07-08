@@ -366,6 +366,10 @@ class FeederCabinetApp:
                     self.logger.info(f"CAN重连后发送最新打印机状态: {current_state}")
                     await self._send_printer_status_notification(current_state)
                     
+                    # 更新缓存的打印机状态，确保后续状态变化能够被正确检测
+                    self._last_printer_state = current_state
+                    self.logger.info(f"更新打印机状态缓存: {current_state}")
+                    
                     # 如果打印机已经从error恢复，同步系统状态
                     if current_state in ['standby', 'ready'] and self.state_manager.state == SystemStateEnum.ERROR:
                         self.logger.info("检测到打印机已从错误状态恢复，同步系统状态")
@@ -621,6 +625,10 @@ class FeederCabinetApp:
                                 current_state = printer_status['printer_state']
                                 self.logger.info(f"CAN重连后发送最新打印机状态: {current_state}")
                                 await self._send_printer_status_notification(current_state)
+                                
+                                # 更新缓存的打印机状态，确保后续状态变化能够被正确检测
+                                self._last_printer_state = current_state
+                                self.logger.info(f"更新打印机状态缓存: {current_state}")
                             else:
                                 self.logger.warning("CAN重连后无法获取打印机状态")
                         await self._send_filament_status_notification()
