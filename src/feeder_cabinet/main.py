@@ -589,7 +589,7 @@ class FeederCabinetApp:
                     await asyncio.sleep(1)
                     
                     # 发送当前打印状态
-                    printer_status = await self.klipper_monitor.get_printer_status()
+                    printer_status = self.klipper_monitor.get_printer_status()
                     if printer_status and 'print_stats' in printer_status:
                         klipper_state = printer_status['print_stats'].get('state', 'standby')
                         await self._send_printer_status_notification(klipper_state)

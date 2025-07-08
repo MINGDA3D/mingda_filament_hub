@@ -248,8 +248,11 @@ class KlipperMonitor:
         if self.ws_task:
             self.ws_task.cancel()
             await asyncio.gather(self.ws_task, return_exceptions=True)
-        if self.ws and self.ws.open:
-            await self.ws.close()
+        if self.ws:
+            try:
+                await self.ws.close()
+            except Exception:
+                pass  # WebSocket可能已经关闭
         self.ws_connected = False
         self.logger.info("Klipper监控已断开")
 
