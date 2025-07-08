@@ -272,10 +272,17 @@ class FeederCabinetCAN:
         """接收消息循环，在独立异步任务中运行"""
         self.logger.info("异步接收任务已启动")
         
-        while self.auto_reconnect:
+        while self.auto_reconnect and self.connected:
             try:
-                async for msg in self.bus:
-                    if msg and msg.arbitration_id == self.RECEIVE_ID:
+                # 使用非阻塞接收，超时时间短以保持响应性
+                msg = self.bus.recv(timeout=0.1)
+                
+                if msg is None:
+                    # 没有消息时短暂异步睡眠，让出控制权
+                    await asyncio.sleep(0.01)
+                    continue
+                    
+                if msg.arbitration_id == self.RECEIVE_ID:
                         self.logger.debug(f"收到消息: ID=0x{msg.arbitration_id:03X}, 数据={[hex(x) for x in msg.data]}")
                         
                         if not msg.data:
