@@ -423,33 +423,37 @@ class FeederCabinetApp:
             # 记录收到的状态更新
             if 'print_stats' in status:
                 self.logger.debug(f"收到Klipper状态更新: print_stats={status.get('print_stats', {}).get('state')}")
+                self.logger.debug(f"当前缓存的打印机状态: {self._last_printer_state}")
             
             # 解析打印机状态
             if 'print_stats' in status:
                 klipper_state = status['print_stats'].get('state')
                 # 仅在状态实际改变时记录日志和转换
-                if klipper_state and klipper_state != self._last_printer_state:
-                    self.logger.debug(f"Klipper状态更新: {self._last_printer_state} -> {klipper_state}")
-                    self._last_printer_state = klipper_state
-                    
-                    # 主动发送打印状态通知给送料柜
-                    asyncio.create_task(self._send_printer_status_notification(klipper_state))
-                    
-                    if klipper_state == 'printing' and self.state_manager.state == SystemStateEnum.IDLE:
-                        self.state_manager.transition_to(SystemStateEnum.PRINTING)
-                    elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING]:
-                        self.state_manager.transition_to(SystemStateEnum.PAUSED)
-                    elif klipper_state in ['complete', 'cancelled'] and self.state_manager.state != SystemStateEnum.IDLE:
-                        self.state_manager.transition_to(SystemStateEnum.IDLE)
-                    elif klipper_state == 'error' and self.state_manager.state != SystemStateEnum.ERROR:
-                        self.logger.warning("打印机进入错误状态，但保持CAN通信")
-                        self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Klipper reported an error")
-                    elif klipper_state in ['standby', 'ready'] and self.state_manager.state == SystemStateEnum.ERROR:
-                        # 从错误状态恢复
-                        self.logger.info(f"检测到打印机从错误状态恢复: {klipper_state}")
-                        self.logger.info(f"当前系统状态: {self.state_manager.state.name}")
-                        self.state_manager.transition_to(SystemStateEnum.IDLE)
-                        self.logger.info("系统状态已从ERROR转换为IDLE")
+                if klipper_state:
+                    if klipper_state != self._last_printer_state:
+                        self.logger.info(f"检测到Klipper状态变化: {self._last_printer_state} -> {klipper_state}")
+                        self._last_printer_state = klipper_state
+                        
+                        # 主动发送打印状态通知给送料柜
+                        asyncio.create_task(self._send_printer_status_notification(klipper_state))
+                        
+                        if klipper_state == 'printing' and self.state_manager.state == SystemStateEnum.IDLE:
+                            self.state_manager.transition_to(SystemStateEnum.PRINTING)
+                        elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING]:
+                            self.state_manager.transition_to(SystemStateEnum.PAUSED)
+                        elif klipper_state in ['complete', 'cancelled'] and self.state_manager.state != SystemStateEnum.IDLE:
+                            self.state_manager.transition_to(SystemStateEnum.IDLE)
+                        elif klipper_state == 'error' and self.state_manager.state != SystemStateEnum.ERROR:
+                            self.logger.warning("打印机进入错误状态，但保持CAN通信")
+                            self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Klipper reported an error")
+                        elif klipper_state in ['standby', 'ready'] and self.state_manager.state == SystemStateEnum.ERROR:
+                            # 从错误状态恢复
+                            self.logger.info(f"检测到打印机从错误状态恢复: {klipper_state}")
+                            self.logger.info(f"当前系统状态: {self.state_manager.state.name}")
+                            self.state_manager.transition_to(SystemStateEnum.IDLE)
+                            self.logger.info("系统状态已从ERROR转换为IDLE")
+                    else:
+                        self.logger.debug(f"Klipper状态未变化，保持为: {klipper_state}")
 
             # 解析断料传感器状态
             filament_status_changed = False
