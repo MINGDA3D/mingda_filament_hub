@@ -19,17 +19,19 @@ import json
 import yaml
 from typing import Dict, Any, Optional
 import requests
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
 
 try:
     from feeder_cabinet.can_communication import FeederCabinetCAN
     from feeder_cabinet.klipper_monitor import KlipperMonitor
     from feeder_cabinet.log_manager import LogManager
+    from feeder_cabinet.state_manager import StateManager, SystemStateEnum
 except ImportError:
     # 如果从包导入失败，尝试相对导入
     from .can_communication import FeederCabinetCAN
     from .klipper_monitor import KlipperMonitor
     from .log_manager import LogManager
+    from .state_manager import StateManager, SystemStateEnum
 
 # 配置默认参数
 DEFAULT_CONFIG_PATH = "/home/mingda/feeder_cabinet_help/config/config.yaml"
@@ -71,16 +73,17 @@ class FeederCabinetApp:
         # 设置主logger
         self.logger = self.log_manager.setup_logger()
         
+        # 初始化状态管理器
+        self.state_manager = StateManager(self.log_manager.get_child_logger(self.logger, "state"))
+        self.state_manager.set_state_change_callback(self._on_state_changed)
+        
         # 组件实例
         self.can_comm = None
         self.klipper_monitor = None
         
-        # 运行状态
-        self.running = False
+        # 运行状态 (由state_manager替代)
+        # self.running = False
         self.main_thread = None
-        
-        # 线程池
-        self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="feeder_cabinet_")
         
         # 配置文件路径
         self.config_path = config_path
@@ -203,114 +206,51 @@ class FeederCabinetApp:
             self.logger.error(f"保存配置文件时发生错误: {str(e)}")
             return False
     
-    def _handle_filament_status_query(self):
+    async def _handle_filament_status_query(self):
         """处理送料柜的挤出机余料状态查询请求。"""
-        thread_id = threading.get_ident()
-        self.logger.info(f"收到挤出机余料状态查询请求 (线程ID: {thread_id})")
+        self.logger.info("收到挤出机余料状态查询请求")
 
         if not self.klipper_monitor:
             self.logger.error("KlipperMonitor 未初始化，无法查询状态")
             if self.can_comm:
-                self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
+                await self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
             return
 
         # 检查WebSocket连接状态
         if not self.klipper_monitor.ws_connected:
             self.logger.warning("Klipper WebSocket未连接，耗材状态无效")
             if self.can_comm:
-                self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
+                await self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
             return
 
-        if not hasattr(self.klipper_monitor, 'filament_sensors_status'):
-            self.logger.error("KlipperMonitor 中缺少 'filament_sensors_status' 属性，无法获取状态")
-            if self.can_comm:
-                self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
-            return
-        
-        sensor_states = self.klipper_monitor.get_filament_status()
-        sensors_config = self.config.get('filament_runout', {}).get('sensors', [])
-        
-        # 添加详细的调试信息
-        self.logger.debug(f"WebSocket连接状态: {self.klipper_monitor.ws_connected}")
-        self.logger.debug(f"原始传感器状态: {sensor_states}")
-        self.logger.debug(f"传感器配置: {sensors_config}")
-        self.logger.debug(f"filament_present数组: {self.klipper_monitor.filament_present}")
-        
-        # 检查当前打印机状态
-        printer_status = self.klipper_monitor.get_printer_status()
-        self.logger.debug(f"打印机状态: {printer_status.get('printer_state', 'unknown')}")
-        
-        # 检查传感器对象订阅状态
-        self.logger.debug(f"传感器监控是否启用: {self.klipper_monitor.runout_detection_enabled}")
-        self.logger.debug(f"WebSocket重连次数: {self.klipper_monitor.reconnect_count}")
-        
-        # 检查传感器名称是否匹配
-        expected_sensor_objects = self.klipper_monitor.filament_sensor_objects
-        self.logger.debug(f"期望的传感器对象: {expected_sensor_objects}")
-        
-        # 获取挤出机到缓冲区的映射
-        # 优先使用mapping字段，如果不存在则从left/right配置构建
-        extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
-        if not extruder_mapping:
-            # 从left/right配置构建映射
-            extruders_config = self.config.get('extruders', {})
-            if 'left' in extruders_config and 'right' in extruders_config:
-                extruder_mapping = {
-                    0: extruders_config['left'].get('buffer', 0),
-                    1: extruders_config['right'].get('buffer', 1)
-                }
-                self.logger.debug(f"从left/right配置构建映射: {extruder_mapping}")
-        
-        status_bitmap = 0
-        is_valid = True
-        
         try:
-            # 如果没有sensors配置，使用默认的传感器列表
-            if not sensors_config:
-                sensors_config = [
-                    {'name': 'Filament_Sensor0', 'extruder': 0},
-                    {'name': 'Filament_Sensor1', 'extruder': 1}
-                ]
-                self.logger.debug("使用默认传感器配置")
+            sensor_states = self.klipper_monitor.get_filament_status()
+            extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
             
-            # 根据挤出机到缓冲区的映射构建位图
-            for sensor_info in sensors_config:
+            status_bitmap = 0
+            
+            for sensor_info in self.config.get('filament_runout', {}).get('sensors', []):
                 sensor_name = sensor_info.get('name')
                 extruder_index = sensor_info.get('extruder')
 
                 if sensor_name is None or extruder_index is None:
                     continue
                 
-                # 获取传感器状态
-                has_filament = sensor_states.get(sensor_name, False)
-                
-                if has_filament:
-                    # 从映射中查找此挤出机对应的缓冲区
-                    # 统一处理键类型
-                    buffer_index = None
-                    if isinstance(extruder_index, int):
-                        buffer_index = extruder_mapping.get(extruder_index)
-                    if buffer_index is None:
-                        buffer_index = extruder_mapping.get(str(extruder_index))
-
+                if sensor_states.get(sensor_name, False):
+                    buffer_index = extruder_mapping.get(extruder_index)
                     if buffer_index is not None:
                         status_bitmap |= (1 << buffer_index)
-                        self.logger.debug(f"挤出机 {extruder_index} 有料，缓冲区 {buffer_index} 位被设置")
-                    else:
-                        self.logger.warning(f"在配置中找不到挤出机 {extruder_index} 到缓冲区的映射")
-                else:
-                    self.logger.debug(f"挤出机 {extruder_index} 无料")
 
-            self.logger.info(f"查询到耗材状态，准备发送响应。Sensor states: {sensor_states}, Mapping: {extruder_mapping}, Bitmap: {bin(status_bitmap)}, 线程ID: {thread_id}")
+            self.logger.info(f"查询到耗材状态，准备发送响应。Bitmap: {bin(status_bitmap)}")
             if self.can_comm:
-                self.can_comm.send_filament_status_response(is_valid=is_valid, status_bitmap=status_bitmap)
+                await self.can_comm.send_filament_status_response(is_valid=True, status_bitmap=status_bitmap)
 
         except Exception as e:
             self.logger.error(f"处理耗材状态查询时出错: {e}", exc_info=True)
             if self.can_comm:
-                self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
+                await self.can_comm.send_filament_status_response(is_valid=False, status_bitmap=0)
     
-    def _handle_feeder_mapping_set(self, mapping_data: Dict[str, Any]):
+    async def _handle_feeder_mapping_set(self, mapping_data: Dict[str, Any]):
         """
         处理送料柜发送的料管映射设置命令
         
@@ -320,48 +260,88 @@ class FeederCabinetApp:
         try:
             left_buffer = mapping_data.get('left_buffer', 0)
             right_buffer = mapping_data.get('right_buffer', 1)
-            status = mapping_data.get('status', 0)
             
-            self.logger.info(f"收到料管映射设置命令: 左缓冲区={left_buffer}, 右缓冲区={right_buffer}, 状态={status}")
+            self.logger.info(f"收到料管映射设置命令: 左缓冲区={left_buffer}, 右缓冲区={right_buffer}")
             
-            # 更新配置
             if 'extruders' not in self.config:
                 self.config['extruders'] = {}
             
-            # 更新mapping配置 (挤出机索引: 缓冲区索引)
             self.config['extruders']['mapping'] = {
-                0: left_buffer,   # 左挤出机(0) -> 左缓冲区
-                1: right_buffer   # 右挤出机(1) -> 右缓冲区
+                0: left_buffer,
+                1: right_buffer
             }
             
-            # 同时更新legacy格式的配置以保持兼容性
-            if 'left' not in self.config['extruders']:
-                self.config['extruders']['left'] = {}
-            if 'right' not in self.config['extruders']:
-                self.config['extruders']['right'] = {}
-                
-            self.config['extruders']['left']['buffer'] = left_buffer
-            self.config['extruders']['right']['buffer'] = right_buffer
-            
-            # 保存配置文件
             save_success = self._save_config()
             
-            # 发送响应
             if self.can_comm:
-                status = 0 if save_success else 1  # 0=成功, 1=失败
-                self.can_comm.send_feeder_mapping_response(left_buffer, right_buffer, status)
-                
-            if save_success:
-                self.logger.info(f"料管映射已更新并保存: 左挤出机->缓冲区{left_buffer}, 右挤出机->缓冲区{right_buffer}")
-            else:
-                self.logger.error("料管映射更新成功但保存配置文件失败")
+                status = 0 if save_success else 1
+                await self.can_comm.send_feeder_mapping_response(left_buffer, right_buffer, status)
                 
         except Exception as e:
             self.logger.error(f"处理料管映射设置时发生错误: {str(e)}", exc_info=True)
-            # 发送错误响应
             if self.can_comm:
-                self.can_comm.send_feeder_mapping_response(0, 0, 1)  # 状态1表示错误
+                await self.can_comm.send_feeder_mapping_response(0, 0, 1)
     
+    async def _handle_klipper_status_update(self, status: Dict[str, Any]):
+        """处理来自KlipperMonitor的状态更新，并驱动状态机"""
+        # 解析打印机状态
+        if 'print_stats' in status:
+            klipper_state = status['print_stats'].get('state')
+            # 仅在状态实际改变时记录日志和转换
+            if klipper_state and klipper_state != self.klipper_monitor.printer_state:
+                self.logger.debug(f"Klipper状态更新: {klipper_state}")
+                if klipper_state == 'printing' and self.state_manager.state == SystemStateEnum.IDLE:
+                    self.state_manager.transition_to(SystemStateEnum.PRINTING)
+                elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING]:
+                     self.state_manager.transition_to(SystemStateEnum.PAUSED)
+                elif klipper_state in ['complete', 'cancelled'] and self.state_manager.state != SystemStateEnum.IDLE:
+                    self.state_manager.transition_to(SystemStateEnum.IDLE)
+                elif klipper_state == 'error' and self.state_manager.state != SystemStateEnum.ERROR:
+                    self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Klipper reported an error")
+
+        # 解析断料传感器状态
+        if self.state_manager.state == SystemStateEnum.PRINTING:
+            for i, sensor_obj_name in enumerate(self.klipper_monitor.filament_sensor_objects):
+                if sensor_obj_name in status and 'filament_detected' in status[sensor_obj_name]:
+                    has_filament = status[sensor_obj_name]['filament_detected']
+                    if not has_filament:
+                        self.logger.info(f"检测到传感器 {sensor_obj_name} 断料事件。")
+                        target_state = SystemStateEnum.T1_RUNOUT if i == 0 else SystemStateEnum.T2_RUNOUT
+                        if not self.state_manager.is_state(target_state):
+                            self.state_manager.transition_to(target_state, extruder=i)
+                            break # 一次只处理一个断料事件
+
+    async def _on_state_changed(self, old_state: SystemStateEnum, new_state: SystemStateEnum, payload: Dict[str, Any]):
+        """当状态机状态改变时，执行相应的动作"""
+        self.logger.info(f"State Change: {old_state.name} -> {new_state.name} | Payload: {payload}")
+        try:
+            if new_state == SystemStateEnum.T1_RUNOUT or new_state == SystemStateEnum.T2_RUNOUT:
+                extruder = payload.get('extruder')
+                self.logger.info(f"ACTION: 为挤出机 {extruder} 断料事件暂停打印。")
+                if not await self.klipper_monitor.pause_print():
+                    self.logger.error("ACTION FAILED: 暂停打印失败！进入错误状态。")
+                    self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Failed to pause print for runout")
+            
+            elif new_state == SystemStateEnum.PAUSED:
+                if old_state in [SystemStateEnum.T1_RUNOUT, SystemStateEnum.T2_RUNOUT]:
+                    extruder = self.state_manager.get_payload().get('extruder')
+                    self.logger.info(f"ACTION: 为挤出机 {extruder} 请求补料。")
+                    if not await self.can_comm.request_feed(extruder=extruder):
+                         self.logger.error(f"ACTION FAILED: 为挤出机 {extruder} 请求补料失败！进入错误状态。")
+                         self.state_manager.transition_to(SystemStateEnum.ERROR, reason=f"Failed to request feed for extruder {extruder}")
+                    else:
+                        self.logger.info(f"补料请求已发送，转换为FEEDING状态。")
+                        self.state_manager.transition_to(SystemStateEnum.FEEDING, extruder=extruder)
+
+            elif new_state == SystemStateEnum.ERROR:
+                reason = payload.get('reason', 'Unknown error')
+                self.logger.error(f"ACTION: 系统进入错误状态，原因: {reason}")
+                await self.can_comm.send_printer_error(error_code=99)
+
+        except Exception as e:
+            self.logger.error(f"ACTION FAILED: 状态处理时发生严重错误: {e}", exc_info=True)
+            self.state_manager.transition_to(SystemStateEnum.ERROR, reason=f"Exception in state handler: {e}")
+
     
     def init(self) -> bool:
         """
@@ -399,6 +379,7 @@ class FeederCabinetApp:
                 moonraker_url=klipper_config['moonraker_url'],
                 extruder_config=self.config.get('extruders', None)
             )
+            self.klipper_monitor.register_status_callback(self._handle_klipper_status_update)
             
             # 为Klipper监控模块设置logger
             self.klipper_monitor.logger = self.log_manager.get_child_logger(self.logger, "klipper")
@@ -441,27 +422,28 @@ class FeederCabinetApp:
             return True
         except Exception as e:
             self.logger.error(f"初始化应用程序时发生错误: {str(e)}", exc_info=True)
+            self.state_manager.transition_to(SystemStateEnum.ERROR, error=str(e))
             return False
             
-    def start(self) -> bool:
+    async def start(self) -> bool:
         """
         启动应用程序
         
         Returns:
             bool: 启动是否成功
         """
-        if self.running:
-            self.logger.info("应用程序已经在运行中")
+        if self.state_manager.state != SystemStateEnum.STARTING:
+            self.logger.info(f"应用程序已经在运行中或处于非启动状态: {self.state_manager.state.name}")
             return True
             
         try:
             # 连接CAN总线
-            if not self.can_comm.connect():
+            if not await self.can_comm.connect():
                 self.logger.error("连接CAN总线失败")
                 return False
                 
             # 连接Klipper，但不将其视为致命错误
-            if not self.klipper_monitor.connect():
+            if not await self.klipper_monitor.connect():
                 self.logger.warning("初次连接Klipper失败，系统将在后台自动重连。")
                 # 程序继续运行，依赖后台重连
             else:
@@ -472,55 +454,52 @@ class FeederCabinetApp:
             self.klipper_monitor.start_monitoring(interval=update_interval)
             
             # 标记为运行中
-            self.running = True
-            self.logger.info("应用程序已启动")
+            self.state_manager.transition_to(SystemStateEnum.IDLE)
+            self.logger.info("应用程序已启动，进入空闲状态")
             
             return True
         except Exception as e:
             self.logger.error(f"启动应用程序时发生错误: {str(e)}")
-            self.stop()
+            self.state_manager.transition_to(SystemStateEnum.ERROR, error=str(e))
+            await self.stop()
             return False
     
-    def stop(self):
+    async def stop(self):
         """停止应用程序"""
         self.logger.info("正在停止应用程序...")
-        self.running = False # 设置标志位以停止主循环
+        self.state_manager.transition_to(SystemStateEnum.DISCONNECTED)
         
         try:
             if self.klipper_monitor:
                 self.logger.info("正在断开Klipper监控器...")
-                self.klipper_monitor.stop_monitoring()
-                self.klipper_monitor.disconnect()
+                await self.klipper_monitor.disconnect()
                 
             if self.can_comm:
                 self.logger.info("正在断开CAN通信...")
-                self.can_comm.disconnect()
+                await self.can_comm.disconnect()
 
-            # 关闭主应用的线程池
-            self.thread_pool.shutdown(wait=True)
-                
             self.logger.info("应用程序已成功停止。")
         except Exception as e:
             self.logger.error(f"停止应用程序时发生错误: {str(e)}", exc_info=True)
     
-    def run(self):
+    async def run(self):
         """运行应用程序"""
         if not self.init():
             self.logger.error("初始化失败，退出程序")
             return
             
-        if not self.start():
+        if not await self.start():
             self.logger.error("启动失败，退出程序")
             return
             
         # 保持程序运行
         try:
-            while self.running:
-                time.sleep(1)
-        except KeyboardInterrupt:
+            while self.state_manager.state not in [SystemStateEnum.DISCONNECTED, SystemStateEnum.ERROR]:
+                await asyncio.sleep(1)
+        except (KeyboardInterrupt, asyncio.CancelledError):
             self.logger.info("接收到终止信号，正在停止...")
         finally:
-            self.stop()
+            await self.stop()
 
 def parse_args():
     """解析命令行参数"""
@@ -646,7 +625,7 @@ def main():
     
     # 正常运行
     try:
-        app.run()
+        asyncio.run(app.run())
     except Exception as e:
         app.logger.error(f"运行时发生错误: {str(e)}", exc_info=True)
         sys.exit(1)
