@@ -376,7 +376,12 @@ class FeederCabinetApp:
                 elif klipper_state in ['complete', 'cancelled'] and self.state_manager.state != SystemStateEnum.IDLE:
                     self.state_manager.transition_to(SystemStateEnum.IDLE)
                 elif klipper_state == 'error' and self.state_manager.state != SystemStateEnum.ERROR:
+                    self.logger.warning("打印机进入错误状态，但保持CAN通信")
                     self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Klipper reported an error")
+                elif klipper_state in ['standby', 'ready'] and self.state_manager.state == SystemStateEnum.ERROR:
+                    # 从错误状态恢复
+                    self.logger.info("打印机从错误状态恢复")
+                    self.state_manager.transition_to(SystemStateEnum.IDLE)
 
         # 解析断料传感器状态
         filament_status_changed = False
@@ -528,11 +533,12 @@ class FeederCabinetApp:
         self.logger.info("启动CAN自动重连任务")
         reconnect_interval = 5  # 重连间隔5秒
         
-        while self.state_manager.state not in [SystemStateEnum.DISCONNECTED, SystemStateEnum.ERROR]:
+        while self.state_manager.state != SystemStateEnum.DISCONNECTED:
             try:
                 await asyncio.sleep(reconnect_interval)
                 
                 if not self.can_comm.connected:
+                    self.logger.info(f"CAN重连任务：检测到断开，当前系统状态={self.state_manager.state.name}")
                     self.logger.info("尝试重新连接CAN总线...")
                     if await self.can_comm.connect():
                         self.logger.info("CAN总线重连成功")
