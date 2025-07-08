@@ -414,10 +414,8 @@ class FeederCabinetApp:
                 self.klipper_monitor.enable_filament_runout_detection()
                 
                 # 配置自动重连
-                self.klipper_monitor.enable_auto_reconnect(
-                    enable=True,
-                    interval=5
-                )
+                self.klipper_monitor.auto_reconnect = True
+                self.klipper_monitor.reconnect_interval = 5
             
             return True
         except Exception as e:
