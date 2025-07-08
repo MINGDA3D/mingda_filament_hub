@@ -48,8 +48,8 @@ class FeederCabinetCAN:
     CMD_HEARTBEAT              = 0x0A       # 心跳包
     CMD_LOAD_FILAMENT          = 0x0B       # 进料
     CMD_UNLOAD_FILAMENT        = 0x0C       # 退料
-    CMD_QUERY_PRINTER_FILAMENT_STATUS  = 0x0D       # 送料柜查询左右缓冲区对应打印机挤出机余料状态
-    CMD_PRINTER_FILAMENT_STATUS_RESPONSE = 0x0E    # 送料柜左右缓冲区对应打印机挤出机余料状态响应
+    CMD_QUERY_PRINTER_FILAMENT_STATUS  = 0x0D       # 送料柜查询左右料管对应打印机挤出机余料状态
+    CMD_PRINTER_FILAMENT_STATUS_RESPONSE = 0x0E    # 送料柜左右料管对应打印机挤出机余料状态响应
     CMD_SET_FEEDER_MAPPING             = 0x0F       # 设置料管与挤出机对应关系
     CMD_QUERY_FEEDER_MAPPING           = 0x10       # 查询料管与挤出机对应关系
     CMD_FEEDER_MAPPING_RESPONSE        = 0x11       # 料管与挤出机对应关系响应
@@ -258,8 +258,8 @@ class FeederCabinetCAN:
                         elif command == self.CMD_SET_FEEDER_MAPPING and self.mapping_set_callback:
                              if len(msg.data) >= 4 and msg.data[3] == 0x00 and msg.data[1] < 2 and msg.data[2] < 2 and msg.data[1] != msg.data[2]:
                                 mapping_data = {
-                                    'left_buffer': msg.data[1],
-                                    'right_buffer': msg.data[2],
+                                    'left_tube': msg.data[1],
+                                    'right_tube': msg.data[2],
                                     'status': msg.data[3]
                                 }
                                 asyncio.create_task(self.mapping_set_callback(mapping_data))

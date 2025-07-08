@@ -82,7 +82,7 @@ Klipper/Moonraker <--WebSocket/REST--> FeederCabinetApp <--CAN Bus--> Feeder Cab
 
 - The system uses Chinese documentation and comments
 - CAN communication runs at 1Mbps (configurable)
-- Dual extruder support with configurable buffer zone mappings
+- Dual extruder support with configurable tube mappings
 - All logging goes to `/home/mingda/printer_data/logs/`
 - Configuration file at `/etc/feeder_cabinet/config.yaml`
 - G-code commands are integrated via Klipper macros

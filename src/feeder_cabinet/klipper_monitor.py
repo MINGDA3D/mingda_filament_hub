@@ -70,7 +70,7 @@ class KlipperMonitor:
         
         # 挤出机配置
         self.extruder_config = extruder_config or {}
-        self.extruder_to_buffer = self.extruder_config.get('mapping', {0: 0, 1: 1})
+        self.extruder_to_tube = self.extruder_config.get('mapping', {0: 0, 1: 1})
         
         # Gcode命令模板
         self.pause_cmd = "PAUSE"

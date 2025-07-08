@@ -124,9 +124,9 @@ class FeederCabinetApp:
             'extruders': {
                 'count': 2,  # 默认支持双挤出机
                 'active': 0,  # 默认活动挤出机
-                # 喷头到送料柜缓冲区的映射
-                # 格式: extruder_index: buffer_index
-                # 示例 (左喷头 -> 右缓冲区, 右喷头 -> 左缓冲区):
+                # 喷头到送料柜料管的映射
+                # 格式: extruder_index: tube_index
+                # 示例 (左喷头 -> 右料管, 右喷头 -> 左料管):
                 # mapping:
                 #   0: 1
                 #   1: 0
@@ -237,9 +237,9 @@ class FeederCabinetApp:
                     continue
                 
                 if sensor_states.get(sensor_name, False):
-                    buffer_index = extruder_mapping.get(extruder_index)
-                    if buffer_index is not None:
-                        status_bitmap |= (1 << buffer_index)
+                    tube_index = extruder_mapping.get(extruder_index)
+                    if tube_index is not None:
+                        status_bitmap |= (1 << tube_index)
 
             self.logger.info(f"查询到耗材状态，准备发送响应。Bitmap: {bin(status_bitmap)}")
             if self.can_comm:
@@ -255,27 +255,27 @@ class FeederCabinetApp:
         处理送料柜发送的料管映射设置命令
         
         Args:
-            mapping_data: 映射数据字典，包含left_buffer, right_buffer, status
+            mapping_data: 映射数据字典，包含left_tube, right_tube, status
         """
         try:
-            left_buffer = mapping_data.get('left_buffer', 0)
-            right_buffer = mapping_data.get('right_buffer', 1)
+            left_tube = mapping_data.get('left_tube', 0)
+            right_tube = mapping_data.get('right_tube', 1)
             
-            self.logger.info(f"收到料管映射设置命令: 左缓冲区={left_buffer}, 右缓冲区={right_buffer}")
+            self.logger.info(f"收到料管映射设置命令: 左料管={left_tube}, 右料管={right_tube}")
             
             if 'extruders' not in self.config:
                 self.config['extruders'] = {}
             
             self.config['extruders']['mapping'] = {
-                0: left_buffer,
-                1: right_buffer
+                0: left_tube,
+                1: right_tube
             }
             
             save_success = self._save_config()
             
             if self.can_comm:
                 status = 0 if save_success else 1
-                await self.can_comm.send_feeder_mapping_response(left_buffer, right_buffer, status)
+                await self.can_comm.send_feeder_mapping_response(left_tube, right_tube, status)
                 
         except Exception as e:
             self.logger.error(f"处理料管映射设置时发生错误: {str(e)}", exc_info=True)
