@@ -87,6 +87,7 @@ class FeederCabinetCAN:
         
         # 异步任务和锁
         self.rx_task: Optional[asyncio.Task] = None
+        self.auto_reconnect = True  # 启用自动重连
         self.heartbeat_task: Optional[asyncio.Task] = None
         self.send_lock = asyncio.Lock()
         self.reconnect_lock = asyncio.Lock()
@@ -119,7 +120,8 @@ class FeederCabinetCAN:
             # 执行握手过程
             if not await self._perform_handshake():
                 self.logger.error("握手过程失败")
-                await self.disconnect()
+                # 清理连接但保持auto_reconnect
+                await self._cleanup_connection()
                 return False
             
             self.connected = True
@@ -139,6 +141,30 @@ class FeederCabinetCAN:
                     pass
                 self.bus = None
             return False
+    
+    async def _cleanup_connection(self):
+        """清理连接但不修改auto_reconnect标志"""
+        self.connected = False
+        
+        tasks_to_cancel = []
+        if self.rx_task:
+            self.rx_task.cancel()
+            tasks_to_cancel.append(self.rx_task)
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
+            tasks_to_cancel.append(self.heartbeat_task)
+
+        if tasks_to_cancel:
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+
+        if self.bus:
+            try:
+                self.bus.shutdown()
+            except Exception as e:
+                self.logger.error(f"关闭CAN总线时发生错误: {str(e)}")
+            self.bus = None
+            
+        self.logger.info("已清理CAN总线连接")
     
     async def disconnect(self):
         """断开CAN总线连接"""

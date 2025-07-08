@@ -422,6 +422,35 @@ class FeederCabinetApp:
             self.logger.error(f"初始化应用程序时发生错误: {str(e)}", exc_info=True)
             self.state_manager.transition_to(SystemStateEnum.ERROR, error=str(e))
             return False
+    
+    async def _can_reconnect_task(self):
+        """CAN自动重连任务"""
+        self.logger.info("启动CAN自动重连任务")
+        reconnect_interval = 5  # 重连间隔5秒
+        
+        while self.state_manager.state not in [SystemStateEnum.DISCONNECTED, SystemStateEnum.ERROR]:
+            try:
+                await asyncio.sleep(reconnect_interval)
+                
+                if not self.can_comm.connected:
+                    self.logger.info("尝试重新连接CAN总线...")
+                    if await self.can_comm.connect():
+                        self.logger.info("CAN总线重连成功")
+                        break
+                    else:
+                        self.logger.warning(f"CAN总线重连失败，{reconnect_interval}秒后重试")
+                else:
+                    # 已经连接，退出重连任务
+                    break
+                    
+            except asyncio.CancelledError:
+                self.logger.info("CAN重连任务被取消")
+                break
+            except Exception as e:
+                self.logger.error(f"CAN重连任务异常: {str(e)}", exc_info=True)
+                await asyncio.sleep(reconnect_interval)
+        
+        self.logger.info("CAN自动重连任务结束")
             
     async def start(self) -> bool:
         """
@@ -437,8 +466,9 @@ class FeederCabinetApp:
         try:
             # 连接CAN总线
             if not await self.can_comm.connect():
-                self.logger.error("连接CAN总线失败")
-                return False
+                self.logger.error("初次连接CAN总线失败，将启动自动重连任务")
+                # 启动CAN自动重连任务
+                asyncio.create_task(self._can_reconnect_task())
                 
             # 连接Klipper，但不将其视为致命错误
             if not await self.klipper_monitor.connect():

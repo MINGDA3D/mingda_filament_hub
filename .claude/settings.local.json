@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(python3:*)",
-      "Bash(pip3 install:*)"
+      "Bash(pip3 install:*)",
+      "Bash(rg:*)"
     ],
     "deny": []
   }
