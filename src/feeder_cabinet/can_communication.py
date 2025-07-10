@@ -100,7 +100,8 @@ class FeederCabinetCAN:
         # 心跳响应监控
         self.heartbeat_sent_time = 0
         self.heartbeat_response_received = False
-        self.heartbeat_timeout = 3  # 心跳响应超时3秒
+        self.heartbeat_timeout = 2  # 心跳响应超时2秒
+        self.heartbeat_interval = 3  # 心跳发送间隔3秒
     
     async def connect(self) -> bool:
         """
@@ -362,7 +363,6 @@ class FeederCabinetCAN:
         
         while True:
             try:
-                await asyncio.sleep(5)
                 if self.connected:
                     # 重置响应标志
                     self.heartbeat_response_received = False
@@ -374,6 +374,8 @@ class FeederCabinetCAN:
                     if not success:
                         heartbeat_fail_count += 1
                         self.logger.warning(f"心跳发送失败 ({heartbeat_fail_count}/{max_heartbeat_failures})")
+                        # 发送失败，立即重试
+                        await asyncio.sleep(0.1)  # 短暂延迟后重试
                     else:
                         # 发送成功，等待响应
                         await asyncio.sleep(self.heartbeat_timeout)
@@ -381,11 +383,16 @@ class FeederCabinetCAN:
                         if not self.heartbeat_response_received:
                             heartbeat_fail_count += 1
                             self.logger.warning(f"心跳未收到响应 ({heartbeat_fail_count}/{max_heartbeat_failures})")
+                            # 未收到响应，立即发送下一个心跳
                         else:
-                            # 收到响应，重置计数器
+                            # 收到响应，重置计数器，等待正常间隔
                             if heartbeat_fail_count > 0:
                                 self.logger.info("心跳响应恢复正常")
-                                heartbeat_fail_count = 0
+                            heartbeat_fail_count = 0
+                            # 正常情况下等待剩余时间（总共3秒间隔）
+                            remaining_time = self.heartbeat_interval - self.heartbeat_timeout
+                            if remaining_time > 0:
+                                await asyncio.sleep(remaining_time)
                     
                     # 检查是否需要判定断开
                     if heartbeat_fail_count >= max_heartbeat_failures:
@@ -394,6 +401,9 @@ class FeederCabinetCAN:
                         heartbeat_fail_count = 0
                         if not self.reconnect_lock.locked():
                             asyncio.create_task(self.reconnect())
+                else:
+                    # 未连接时等待
+                    await asyncio.sleep(1)
                             
             except asyncio.CancelledError:
                 self.logger.info("心跳任务被取消")
@@ -404,6 +414,7 @@ class FeederCabinetCAN:
                     self.connected = False
                     if not self.reconnect_lock.locked():
                         asyncio.create_task(self.reconnect())
+                await asyncio.sleep(1)  # 异常后短暂等待
         
         self.logger.info("心跳任务已结束")
     
