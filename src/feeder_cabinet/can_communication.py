@@ -347,17 +347,40 @@ class FeederCabinetCAN:
     async def _heartbeat_loop(self):
         """心跳消息循环，在独立异步任务中运行"""
         self.logger.info("异步心跳任务已启动")
+        heartbeat_fail_count = 0
+        max_heartbeat_failures = 2  # 连续失败2次后认为断开（10秒内检测到断开）
+        
         while True:
             try:
                 await asyncio.sleep(5)
                 if self.connected:
-                    await self.send_message(self.CMD_HEARTBEAT)
+                    # 检查心跳发送是否成功
+                    success = await self.send_message(self.CMD_HEARTBEAT)
+                    if not success:
+                        heartbeat_fail_count += 1
+                        self.logger.warning(f"心跳发送失败 ({heartbeat_fail_count}/{max_heartbeat_failures})")
+                        
+                        if heartbeat_fail_count >= max_heartbeat_failures:
+                            self.logger.error("连续心跳失败，判定CAN连接已断开")
+                            self.connected = False
+                            heartbeat_fail_count = 0
+                            # 避免创建太多重连任务
+                            if not self.reconnect_lock.locked():
+                                asyncio.create_task(self.reconnect())
+                    else:
+                        # 心跳成功，重置计数器
+                        if heartbeat_fail_count > 0:
+                            self.logger.info("心跳恢复正常")
+                            heartbeat_fail_count = 0
             except asyncio.CancelledError:
                 self.logger.info("心跳任务被取消")
                 break
             except Exception as e:
+                self.logger.error(f"心跳任务异常: {str(e)}")
                 if self.connected:
-                    self.logger.error(f"发送心跳消息时发生错误: {str(e)}")
+                    self.connected = False
+                    if not self.reconnect_lock.locked():
+                        asyncio.create_task(self.reconnect())
         
         self.logger.info("心跳任务已结束")
     
