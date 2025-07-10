@@ -96,6 +96,11 @@ class FeederCabinetCAN:
         # 自动重连
         self.auto_reconnect = True
         self.reconnect_interval = 5  # seconds
+        
+        # 心跳响应监控
+        self.heartbeat_sent_time = 0
+        self.heartbeat_response_received = False
+        self.heartbeat_timeout = 3  # 心跳响应超时3秒
     
     async def connect(self) -> bool:
         """
@@ -311,6 +316,11 @@ class FeederCabinetCAN:
                                 }
                                 asyncio.create_task(self.mapping_set_callback(mapping_data))
                         else:
+                            # 检查是否为心跳响应 (根据你的candump，响应格式为: 05 00 FA E2 7E)
+                            if len(msg.data) >= 1 and msg.data[0] == 0x05:
+                                self.logger.debug("收到心跳响应")
+                                self.heartbeat_response_received = True
+                            
                             if self.status_callback:
                                 status_data = {
                                     'status': msg.data[0],
@@ -348,30 +358,43 @@ class FeederCabinetCAN:
         """心跳消息循环，在独立异步任务中运行"""
         self.logger.info("异步心跳任务已启动")
         heartbeat_fail_count = 0
-        max_heartbeat_failures = 2  # 连续失败2次后认为断开（10秒内检测到断开）
+        max_heartbeat_failures = 2  # 连续失败2次后认为断开
         
         while True:
             try:
                 await asyncio.sleep(5)
                 if self.connected:
-                    # 检查心跳发送是否成功
+                    # 重置响应标志
+                    self.heartbeat_response_received = False
+                    import time
+                    self.heartbeat_sent_time = time.time()
+                    
+                    # 发送心跳
                     success = await self.send_message(self.CMD_HEARTBEAT)
                     if not success:
                         heartbeat_fail_count += 1
                         self.logger.warning(f"心跳发送失败 ({heartbeat_fail_count}/{max_heartbeat_failures})")
-                        
-                        if heartbeat_fail_count >= max_heartbeat_failures:
-                            self.logger.error("连续心跳失败，判定CAN连接已断开")
-                            self.connected = False
-                            heartbeat_fail_count = 0
-                            # 避免创建太多重连任务
-                            if not self.reconnect_lock.locked():
-                                asyncio.create_task(self.reconnect())
                     else:
-                        # 心跳成功，重置计数器
-                        if heartbeat_fail_count > 0:
-                            self.logger.info("心跳恢复正常")
-                            heartbeat_fail_count = 0
+                        # 发送成功，等待响应
+                        await asyncio.sleep(self.heartbeat_timeout)
+                        
+                        if not self.heartbeat_response_received:
+                            heartbeat_fail_count += 1
+                            self.logger.warning(f"心跳未收到响应 ({heartbeat_fail_count}/{max_heartbeat_failures})")
+                        else:
+                            # 收到响应，重置计数器
+                            if heartbeat_fail_count > 0:
+                                self.logger.info("心跳响应恢复正常")
+                                heartbeat_fail_count = 0
+                    
+                    # 检查是否需要判定断开
+                    if heartbeat_fail_count >= max_heartbeat_failures:
+                        self.logger.error("连续心跳失败或无响应，判定CAN连接已断开")
+                        self.connected = False
+                        heartbeat_fail_count = 0
+                        if not self.reconnect_lock.locked():
+                            asyncio.create_task(self.reconnect())
+                            
             except asyncio.CancelledError:
                 self.logger.info("心跳任务被取消")
                 break
