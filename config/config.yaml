@@ -15,6 +15,7 @@ klipper:
   moonraker_url: http://localhost:7125
   
   # 状态更新间隔（秒），影响状态检测的响应速度
+  # 除了WebSocket实时监听外，还会每隔此时间主动查询一次状态
   # 值越小响应越快，但会增加系统负载
   update_interval: 5.0
 
@@ -25,6 +26,11 @@ extruders:
   
   # 默认活跃挤出机（0=左，1=右）
   active: 0
+  
+  # 挤出机到料管的映射关系
+  mapping:
+    0: 0  # 挤出机0（左）对应料管0
+    1: 1  # 挤出机1（右）对应料管1
   
   # 左右喷头对应的送料柜料管
   left:
@@ -40,11 +46,18 @@ filament_runout:
   # 传感器引脚，可选，留空则使用Klipper内置检测
   # 示例: "gpiochip0/gpio16"
   sensor_pin: null
+  
+  # 断料传感器配置列表
+  sensors:
+    - name: "Filament_Sensor0"  # 传感器名称，需与Klipper配置中的名称一致
+      extruder: 0               # 对应的挤出机索引（0=左，1=右）
+    - name: "Filament_Sensor1"  # 传感器名称，需与Klipper配置中的名称一致
+      extruder: 1               # 对应的挤出机索引（0=左，1=右）
 
 # 日志配置
 logging:
   # 日志级别: DEBUG, INFO, WARNING, ERROR
-  level: INFO
+  level: DEBUG
   
   # 日志文件目录
   log_dir: /home/mingda/printer_data/logs

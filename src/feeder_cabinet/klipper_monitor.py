@@ -43,6 +43,11 @@ class KlipperMonitor:
         self.connection_lock = asyncio.Lock()
         self.ws_task: Optional[asyncio.Task] = None
         
+        # 定时查询相关
+        self.periodic_query_task: Optional[asyncio.Task] = None
+        self.query_interval = 5.0  # 默认5秒查询一次
+        self.periodic_query_enabled = True
+        
         # 状态变量 (将被状态机替代，暂时保留用于兼容)
         self.printer_state = "unknown"
         self.print_stats = {}
@@ -103,6 +108,10 @@ class KlipperMonitor:
                 # 主动查询当前状态
                 await self._query_current_status()
                 
+                # 如果定时查询已启用，启动定时查询任务
+                if self.periodic_query_enabled:
+                    self._start_periodic_query_task()
+                
                 return True
             except (websockets.exceptions.InvalidURI, websockets.exceptions.WebSocketException, OSError) as e:
                 self.logger.error(f"连接WebSocket失败: {e}")
@@ -127,6 +136,16 @@ class KlipperMonitor:
                 self.logger.error(f"WebSocket处理循环中发生未知错误: {e}", exc_info=True)
 
             self.ws_connected = False
+            
+            # 停止定时查询任务（如果正在运行）
+            if self.periodic_query_task and not self.periodic_query_task.done():
+                self.periodic_query_task.cancel()
+                try:
+                    await self.periodic_query_task
+                except asyncio.CancelledError:
+                    pass
+                self.periodic_query_task = None
+                
             if self.auto_reconnect:
                 self.logger.info(f"将在 {self.reconnect_interval} 秒后尝试重连...")
                 await asyncio.sleep(self.reconnect_interval)
@@ -234,6 +253,47 @@ class KlipperMonitor:
         except Exception as e:
             self.logger.error(f"查询打印机状态时发生错误: {str(e)}")
     
+    async def _periodic_query_task(self):
+        """定时查询任务"""
+        self.logger.info(f"启动定时查询任务，间隔: {self.query_interval}秒")
+        
+        while self.periodic_query_enabled:
+            try:
+                await asyncio.sleep(self.query_interval)
+                
+                if self.ws_connected and self.periodic_query_enabled:
+                    # 查询所有订阅的对象（包括断料传感器）
+                    query_request = {
+                        "jsonrpc": "2.0", 
+                        "method": "printer.objects.query",
+                        "params": {
+                            "objects": {
+                                "print_stats": None,
+                                "toolhead": None,
+                                "extruder": None,
+                                "extruder1": None
+                            }
+                        },
+                        "id": self._get_next_request_id()
+                    }
+                    
+                    # 添加断料传感器查询
+                    for sensor_obj in self.filament_sensor_objects:
+                        query_request["params"]["objects"][sensor_obj] = None
+                    
+                    self.logger.debug(f"定时查询打印机状态 (间隔: {self.query_interval}秒)")
+                    await self.ws.send(json.dumps(query_request))
+                    
+            except asyncio.CancelledError:
+                self.logger.info("定时查询任务被取消")
+                break
+            except Exception as e:
+                self.logger.error(f"定时查询任务发生错误: {str(e)}", exc_info=True)
+                # 发生错误后等待一段时间再继续
+                await asyncio.sleep(min(self.query_interval, 10))
+        
+        self.logger.info("定时查询任务结束")
+    
     async def resubscribe_objects(self):
         """重新订阅对象（用于状态同步问题时）"""
         if not self.ws_connected:
@@ -306,24 +366,63 @@ class KlipperMonitor:
             return False
     
     def start_monitoring(self, interval: float = 5.0):
-        """开始监控打印机状态 (在asyncio模式下，此方法主要用于启用相关逻辑)"""
-        self.logger.info("Klipper监控已通过WebSocket启动")
+        """开始监控打印机状态，启动定时查询任务"""
+        self.query_interval = interval
+        self.periodic_query_enabled = True
+        
+        # 如果WebSocket已连接，启动定时查询任务
+        if self.ws_connected:
+            self._start_periodic_query_task()
+        
+        self.logger.info(f"Klipper监控已启动，定时查询间隔: {interval}秒")
+
+    def _start_periodic_query_task(self):
+        """启动定时查询任务"""
+        if self.periodic_query_task is None or self.periodic_query_task.done():
+            self.periodic_query_task = asyncio.create_task(self._periodic_query_task())
+            self.logger.info("定时查询任务已启动")
 
     async def stop_monitoring(self):
-        """停止监控打印机状态 (在asyncio模式下，此方法主要用于禁用相关逻辑)"""
+        """停止监控打印机状态，停止定时查询任务"""
+        self.periodic_query_enabled = False
+        
+        # 停止定时查询任务
+        if self.periodic_query_task and not self.periodic_query_task.done():
+            self.periodic_query_task.cancel()
+            try:
+                await self.periodic_query_task
+            except asyncio.CancelledError:
+                pass
+            self.periodic_query_task = None
+            
         self.logger.info("停止Klipper监控")
     
     async def disconnect(self):
         """断开与Klipper/Moonraker的连接"""
         self.auto_reconnect = False
+        self.periodic_query_enabled = False
+        
+        # 停止定时查询任务
+        if self.periodic_query_task and not self.periodic_query_task.done():
+            self.periodic_query_task.cancel()
+            try:
+                await self.periodic_query_task
+            except asyncio.CancelledError:
+                pass
+            self.periodic_query_task = None
+            
+        # 停止WebSocket任务
         if self.ws_task:
             self.ws_task.cancel()
             await asyncio.gather(self.ws_task, return_exceptions=True)
+            
+        # 关闭WebSocket连接
         if self.ws:
             try:
                 await self.ws.close()
             except Exception:
                 pass  # WebSocket可能已经关闭
+                
         self.ws_connected = False
         self.logger.info("Klipper监控已断开")
 
