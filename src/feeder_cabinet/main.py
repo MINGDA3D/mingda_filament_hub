@@ -656,18 +656,45 @@ class FeederCabinetApp:
                     # 优先使用当前活跃挤出机
                     extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
                     
-                    # 将挤出机编号转换为料管编号
-                    extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
-                    tube_id = extruder_mapping.get(extruder, extruder)  # 如果没有映射，默认使用相同编号
+                    # 检查当前活跃挤出机的断料传感器状态
+                    filament_detected = True  # 默认假设有料
+                    sensor_status_available = False
                     
-                    self.logger.info(f"ACTION: 为当前活跃挤出机 {extruder} 请求补料，对应料管ID: {tube_id}")
+                    if self.klipper_monitor:
+                        # 获取断料传感器状态
+                        filament_status = self.klipper_monitor.get_filament_status()
+                        
+                        # 检查活跃挤出机对应的传感器状态
+                        if extruder < len(self.klipper_monitor.filament_sensor_objects):
+                            sensor_obj_name = self.klipper_monitor.filament_sensor_objects[extruder]
+                            if sensor_obj_name in filament_status:
+                                filament_detected = filament_status[sensor_obj_name]
+                                sensor_status_available = True
+                                self.logger.info(f"检查活跃挤出机 {extruder} 的传感器 {sensor_obj_name} 状态: {'有料' if filament_detected else '缺料'}")
+                            else:
+                                self.logger.warning(f"无法获取活跃挤出机 {extruder} 的传感器状态，传感器对象: {sensor_obj_name}")
+                        else:
+                            self.logger.warning(f"活跃挤出机 {extruder} 没有对应的传感器配置")
                     
-                    if not await self.can_comm.request_feed(tube_id=tube_id):
-                         self.logger.error(f"ACTION FAILED: 为挤出机 {extruder} (料管ID: {tube_id}) 请求补料失败！进入错误状态。")
-                         self.state_manager.transition_to(SystemStateEnum.ERROR, reason=f"Failed to request feed for extruder {extruder}")
+                    # 只有在检测到缺料时才发送补料请求
+                    if not filament_detected:
+                        # 将挤出机编号转换为料管编号
+                        extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
+                        tube_id = extruder_mapping.get(extruder, extruder)  # 如果没有映射，默认使用相同编号
+                        
+                        self.logger.info(f"ACTION: 检测到活跃挤出机 {extruder} 缺料，请求补料，对应料管ID: {tube_id}")
+                        
+                        if not await self.can_comm.request_feed(tube_id=tube_id):
+                             self.logger.error(f"ACTION FAILED: 为挤出机 {extruder} (料管ID: {tube_id}) 请求补料失败！进入错误状态。")
+                             self.state_manager.transition_to(SystemStateEnum.ERROR, reason=f"Failed to request feed for extruder {extruder}")
+                        else:
+                            self.logger.info(f"补料请求已发送，转换为FEEDING状态。")
+                            self.state_manager.transition_to(SystemStateEnum.FEEDING, extruder=extruder)
                     else:
-                        self.logger.info(f"补料请求已发送，转换为FEEDING状态。")
-                        self.state_manager.transition_to(SystemStateEnum.FEEDING, extruder=extruder)
+                        # 当前挤出机有料，不需要补料
+                        status_reason = "有料" if sensor_status_available else "无法检测传感器状态（假设有料）"
+                        self.logger.info(f"ACTION: 活跃挤出机 {extruder} {status_reason}，暂停时无需补料，保持暂停状态。")
+                        # 保持在暂停状态，不转换到其他状态
 
             elif new_state == SystemStateEnum.RESUMING:
                 extruder = payload.get('extruder')
