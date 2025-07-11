@@ -549,7 +549,7 @@ class FeederCabinetApp:
                     self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Failed to pause print for runout")
             
             elif new_state == SystemStateEnum.PAUSED:
-                if old_state == SystemStateEnum.RUNOUT:
+                if old_state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING, SystemStateEnum.RUNOUT]:
                     extruder = self.state_manager.get_payload().get('extruder')
                     self.logger.info(f"ACTION: 为挤出机 {extruder} 请求补料。")
                     if not await self.can_comm.request_feed(extruder=extruder):
