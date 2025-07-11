@@ -226,6 +226,16 @@ class FeederCabinetCAN:
                         except Exception as e:
                             self.logger.error(f"执行重连回调时发生错误: {e}", exc_info=True)
                     
+                    # 重连成功后查询料管映射关系以便状态同步
+                    try:
+                        await asyncio.sleep(0.5)  # 短暂延迟确保连接稳定
+                        if await self.query_feeder_mapping():
+                            self.logger.info("重连后已发送料管映射查询命令")
+                        else:
+                            self.logger.warning("重连后发送料管映射查询命令失败")
+                    except Exception as e:
+                        self.logger.error(f"重连后发送料管映射查询时发生错误: {e}", exc_info=True)
+                    
                     return
                 else:
                     self.logger.warning(f"重连失败，将在 {self.reconnect_interval} 秒后重试。")
