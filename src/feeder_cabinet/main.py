@@ -352,6 +352,85 @@ class FeederCabinetApp:
         except Exception as e:
             self.logger.error(f"发送打印状态通知时出错: {e}", exc_info=True)
     
+    async def _get_extruder_temperature(self, extruder: int) -> Optional[float]:
+        """
+        获取挤出机温度
+        
+        Args:
+            extruder: 挤出机编号
+            
+        Returns:
+            float: 挤出机温度，如果获取失败返回None
+        """
+        try:
+            if not self.klipper_monitor or not self.klipper_monitor.ws_connected:
+                self.logger.warning("Klipper未连接，无法获取温度")
+                return None
+                
+            # 获取打印机状态
+            printer_status = self.klipper_monitor.get_printer_status()
+            
+            # 根据挤出机编号获取温度
+            if extruder == 0:
+                extruder_info = printer_status.get('extruder', {})
+            elif extruder == 1:
+                extruder_info = printer_status.get('extruder1', {})
+            else:
+                self.logger.warning(f"不支持的挤出机编号: {extruder}")
+                return None
+                
+            temperature = extruder_info.get('temperature')
+            if temperature is not None:
+                self.logger.debug(f"挤出机 {extruder} 温度: {temperature:.1f}°C")
+                return float(temperature)
+            else:
+                self.logger.warning(f"无法获取挤出机 {extruder} 温度信息")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"获取挤出机 {extruder} 温度时发生错误: {e}", exc_info=True)
+            return None
+    
+    async def _extrude_filament(self, extruder: int, amount: float) -> bool:
+        """
+        挤出料丝
+        
+        Args:
+            extruder: 挤出机编号
+            amount: 挤出量（mm）
+            
+        Returns:
+            bool: 挤出是否成功
+        """
+        try:
+            if not self.klipper_monitor or not self.klipper_monitor.ws_connected:
+                self.logger.error("Klipper未连接，无法挤出料丝")
+                return False
+                
+            gcode = f"G1 E{amount} F600"  # 以10mm/s的速度挤出
+
+                
+            self.logger.info(f"发送挤出命令: {gcode}")
+            
+            # 发送G代码
+            if await self.klipper_monitor.execute_gcode(gcode):
+                # 等待挤出完成，根据挤出量和速度估算时间
+                wait_time = amount / 10.0 + 2.0  # 10mm/s + 2秒缓冲
+                self.logger.info(f"挤出命令已发送，等待 {wait_time:.1f}秒 让挤出完成...")
+                await asyncio.sleep(wait_time)
+                
+                # 发送相对挤出模式重置命令
+                await self.klipper_monitor.execute_gcode("G92 E0")  # 重置挤出机位置
+                
+                return True
+            else:
+                self.logger.error("发送挤出G代码失败")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"挤出料丝时发生错误: {e}", exc_info=True)
+            return False
+
     async def _handle_can_reconnect(self):
         """处理CAN重连成功事件"""
         self.logger.info("处理CAN重连成功事件")
@@ -576,10 +655,15 @@ class FeederCabinetApp:
                 if old_state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING, SystemStateEnum.RUNOUT]:
                     # 优先使用当前活跃挤出机
                     extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
-                    self.logger.info(f"ACTION: 为当前活跃挤出机 {extruder} 请求补料。")
                     
-                    if not await self.can_comm.request_feed(extruder=extruder):
-                         self.logger.error(f"ACTION FAILED: 为挤出机 {extruder} 请求补料失败！进入错误状态。")
+                    # 将挤出机编号转换为料管编号
+                    extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
+                    tube_id = extruder_mapping.get(extruder, extruder)  # 如果没有映射，默认使用相同编号
+                    
+                    self.logger.info(f"ACTION: 为当前活跃挤出机 {extruder} 请求补料，对应料管ID: {tube_id}")
+                    
+                    if not await self.can_comm.request_feed(tube_id=tube_id):
+                         self.logger.error(f"ACTION FAILED: 为挤出机 {extruder} (料管ID: {tube_id}) 请求补料失败！进入错误状态。")
                          self.state_manager.transition_to(SystemStateEnum.ERROR, reason=f"Failed to request feed for extruder {extruder}")
                     else:
                         self.logger.info(f"补料请求已发送，转换为FEEDING状态。")
@@ -587,7 +671,25 @@ class FeederCabinetApp:
 
             elif new_state == SystemStateEnum.RESUMING:
                 extruder = payload.get('extruder')
-                self.logger.info(f"ACTION: 挤出机 {extruder} 恢复有料，恢复打印。")
+                self.logger.info(f"ACTION: 挤出机 {extruder} 恢复有料，检查温度并准备恢复打印。")
+                
+                # 检查挤出机温度
+                temperature = await self._get_extruder_temperature(extruder)
+                if temperature is not None and temperature > 175.0:
+                    self.logger.info(f"挤出机 {extruder} 温度为 {temperature:.1f}°C，大于175°C，先挤出100mm料清理喷嘴。")
+                    # 先挤出100mm料
+                    if await self._extrude_filament(extruder, 100):
+                        self.logger.info(f"挤出机 {extruder} 预挤出100mm完成，现在恢复打印。")
+                    else:
+                        self.logger.error(f"挤出机 {extruder} 预挤出失败！")
+                        self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Failed to pre-extrude filament")
+                        return
+                elif temperature is not None:
+                    self.logger.info(f"挤出机 {extruder} 温度为 {temperature:.1f}°C，小于175°C，直接恢复打印。")
+                else:
+                    self.logger.warning(f"无法获取挤出机 {extruder} 温度，直接恢复打印。")
+                
+                # 恢复打印
                 if not await self.klipper_monitor.resume_print():
                     self.logger.error("ACTION FAILED: 恢复打印失败！进入错误状态。")
                     self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Failed to resume print after feeding")

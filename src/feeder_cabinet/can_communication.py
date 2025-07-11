@@ -561,29 +561,73 @@ class FeederCabinetCAN:
             self.logger.error(f"构建或发送消息时发生未知错误: {str(e)}")
             return False
     
-    async def request_feed(self, extruder: int = 0) -> bool:
+    async def request_feed(self, tube_id: int = 0) -> bool:
         """
         请求送料
         
         Args:
-            extruder: 挤出机编号
+            tube_id: 料管编号
             
         Returns:
             bool: 请求是否成功
         """
-        return await self.send_message(self.CMD_REQUEST_FEED, extruder)
+        if not self.connected or not self.bus:
+            self.logger.error("未连接到CAN总线，无法发送消息")
+            return False
+            
+        try:
+            # 格式: [CMD_ID, IS_VALID, TUBE_ID, ...]
+            data = [self.CMD_REQUEST_FEED, 0x00, tube_id, 0x00, 0x00, 0x00, 0x00, 0x00]
+            
+            msg = can.Message(
+                arbitration_id=self.SEND_ID,
+                data=data,
+                is_extended_id=False
+            )
+
+            if await self._send_with_retry(msg):
+                self.logger.info(f"已发送补料请求: 料管ID={tube_id}, 数据={[hex(x) for x in data]}")
+                return True
+            else:
+                return False
+            
+        except Exception as e:
+            self.logger.error(f"构建或发送补料请求时失败: {str(e)}")
+            return False
     
-    async def stop_feed(self, extruder: int = 0) -> bool:
+    async def stop_feed(self, tube_id: int = 0) -> bool:
         """
         停止送料
         
         Args:
-            extruder: 挤出机编号
+            tube_id: 料管编号
             
         Returns:
             bool: 停止请求是否成功
         """
-        return await self.send_message(self.CMD_STOP_FEED, extruder)
+        if not self.connected or not self.bus:
+            self.logger.error("未连接到CAN总线，无法发送消息")
+            return False
+            
+        try:
+            # 格式: [CMD_ID, IS_VALID, TUBE_ID, ...]
+            data = [self.CMD_STOP_FEED, 0x00, tube_id, 0x00, 0x00, 0x00, 0x00, 0x00]
+            
+            msg = can.Message(
+                arbitration_id=self.SEND_ID,
+                data=data,
+                is_extended_id=False
+            )
+
+            if await self._send_with_retry(msg):
+                self.logger.info(f"已发送停止送料请求: 料管ID={tube_id}, 数据={[hex(x) for x in data]}")
+                return True
+            else:
+                return False
+            
+        except Exception as e:
+            self.logger.error(f"构建或发送停止送料请求时失败: {str(e)}")
+            return False
     
     async def query_status(self) -> bool:
         """
