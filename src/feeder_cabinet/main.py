@@ -665,14 +665,14 @@ class FeederCabinetApp:
                         filament_status = self.klipper_monitor.get_filament_status()
                         
                         # 检查活跃挤出机对应的传感器状态
-                        if extruder < len(self.klipper_monitor.filament_sensor_objects):
-                            sensor_obj_name = self.klipper_monitor.filament_sensor_objects[extruder]
-                            if sensor_obj_name in filament_status:
-                                filament_detected = filament_status[sensor_obj_name]
+                        if extruder < len(self.klipper_monitor.filament_sensor_names):
+                            sensor_name = self.klipper_monitor.filament_sensor_names[extruder]
+                            if sensor_name in filament_status:
+                                filament_detected = filament_status[sensor_name]
                                 sensor_status_available = True
-                                self.logger.info(f"检查活跃挤出机 {extruder} 的传感器 {sensor_obj_name} 状态: {'有料' if filament_detected else '缺料'}")
+                                self.logger.info(f"检查活跃挤出机 {extruder} 的传感器 {sensor_name} 状态: {'有料' if filament_detected else '缺料'}")
                             else:
-                                self.logger.warning(f"无法获取活跃挤出机 {extruder} 的传感器状态，传感器对象: {sensor_obj_name}")
+                                self.logger.warning(f"无法获取活跃挤出机 {extruder} 的传感器状态，传感器名称: {sensor_name}")
                         else:
                             self.logger.warning(f"活跃挤出机 {extruder} 没有对应的传感器配置")
                     
