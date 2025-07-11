@@ -461,7 +461,13 @@ class FeederCabinetApp:
                         if klipper_state == 'printing' and self.state_manager.state == SystemStateEnum.IDLE:
                             self.state_manager.transition_to(SystemStateEnum.PRINTING)
                         elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING, SystemStateEnum.RUNOUT]:
-                            self.state_manager.transition_to(SystemStateEnum.PAUSED)
+                            # 如果是从断料相关状态转换过来，使用当前活跃挤出机
+                            if self.state_manager.state == SystemStateEnum.RUNOUT:
+                                # 优先使用当前活跃挤出机
+                                active_extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
+                                self.state_manager.transition_to(SystemStateEnum.PAUSED, extruder=active_extruder)
+                            else:
+                                self.state_manager.transition_to(SystemStateEnum.PAUSED)
                         elif klipper_state in ['complete', 'cancelled'] and self.state_manager.state != SystemStateEnum.IDLE:
                             self.state_manager.transition_to(SystemStateEnum.IDLE)
                         elif klipper_state == 'error' and self.state_manager.state != SystemStateEnum.ERROR:
@@ -556,8 +562,10 @@ class FeederCabinetApp:
             
             elif new_state == SystemStateEnum.PAUSED:
                 if old_state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING, SystemStateEnum.RUNOUT]:
-                    extruder = self.state_manager.get_payload().get('extruder')
-                    self.logger.info(f"ACTION: 为挤出机 {extruder} 请求补料。")
+                    # 优先使用当前活跃挤出机
+                    extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
+                    self.logger.info(f"ACTION: 为当前活跃挤出机 {extruder} 请求补料。")
+                    
                     if not await self.can_comm.request_feed(extruder=extruder):
                          self.logger.error(f"ACTION FAILED: 为挤出机 {extruder} 请求补料失败！进入错误状态。")
                          self.state_manager.transition_to(SystemStateEnum.ERROR, reason=f"Failed to request feed for extruder {extruder}")
