@@ -458,7 +458,7 @@ class FeederCabinetApp:
                         # 主动发送打印状态通知给送料柜
                         asyncio.create_task(self._send_printer_status_notification(klipper_state))
                         
-                        if klipper_state == 'printing' and self.state_manager.state == SystemStateEnum.IDLE:
+                        if klipper_state == 'printing' and self.state_manager.state in [SystemStateEnum.IDLE, SystemStateEnum.RESUMING]:
                             self.state_manager.transition_to(SystemStateEnum.PRINTING)
                         elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING, SystemStateEnum.RUNOUT]:
                             # 如果是从断料相关状态转换过来，使用当前活跃挤出机
@@ -503,17 +503,17 @@ class FeederCabinetApp:
             if filament_status_changed:
                 asyncio.create_task(self._send_filament_status_notification())
             
+            # 获取当前活跃的挤出机
+            current_active_extruder = None
+            if 'toolhead' in status and 'extruder' in status['toolhead']:
+                active_extruder_name = status['toolhead']['extruder']
+                current_active_extruder = 0 if active_extruder_name == 'extruder' else 1
+                self.klipper_monitor.active_extruder = current_active_extruder
+            else:
+                current_active_extruder = self.klipper_monitor.active_extruder
+                
             # 处理打印中的断料事件
             if self.state_manager.state == SystemStateEnum.PRINTING:
-                # 获取当前活跃的挤出机
-                current_active_extruder = None
-                if 'toolhead' in status and 'extruder' in status['toolhead']:
-                    active_extruder_name = status['toolhead']['extruder']
-                    current_active_extruder = 0 if active_extruder_name == 'extruder' else 1
-                    self.klipper_monitor.active_extruder = current_active_extruder
-                else:
-                    current_active_extruder = self.klipper_monitor.active_extruder
-                
                 # 首先检查活跃挤出机的断料状态
                 runout_detected = False
                 active_extruder_runout = False
@@ -537,6 +537,18 @@ class FeederCabinetApp:
                 # 如果活跃挤出机没有断料，但有其他挤出机断料，记录警告
                 if runout_detected and not active_extruder_runout:
                     self.logger.warning(f"非活跃挤出机有断料，但当前活跃挤出机 {current_active_extruder} 正常，继续打印。")
+                    
+            # 处理FEEDING状态下的恢复逻辑
+            elif self.state_manager.state == SystemStateEnum.FEEDING:
+                # 检查当前活跃挤出机是否有料
+                for i, sensor_obj_name in enumerate(self.klipper_monitor.filament_sensor_objects):
+                    if sensor_obj_name in status and 'filament_detected' in status[sensor_obj_name]:
+                        has_filament = status[sensor_obj_name]['filament_detected']
+                        if has_filament and i == current_active_extruder:
+                            # 活跃挤出机有料了，可以恢复打印
+                            self.logger.info(f"检测到活跃挤出机 {i} 的传感器 {sensor_obj_name} 恢复有料，准备恢复打印。")
+                            self.state_manager.transition_to(SystemStateEnum.RESUMING, extruder=i)
+                            break
                             
         except Exception as e:
             self.logger.error(f"处理Klipper状态更新时发生错误: {str(e)}", exc_info=True)
@@ -573,6 +585,16 @@ class FeederCabinetApp:
                         self.logger.info(f"补料请求已发送，转换为FEEDING状态。")
                         self.state_manager.transition_to(SystemStateEnum.FEEDING, extruder=extruder)
 
+            elif new_state == SystemStateEnum.RESUMING:
+                extruder = payload.get('extruder')
+                self.logger.info(f"ACTION: 挤出机 {extruder} 恢复有料，恢复打印。")
+                if not await self.klipper_monitor.resume_print():
+                    self.logger.error("ACTION FAILED: 恢复打印失败！进入错误状态。")
+                    self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Failed to resume print after feeding")
+                else:
+                    self.logger.info("恢复打印成功，等待状态同步。")
+                    # 恢复打印后，等待Klipper状态变为printing，由状态更新逻辑处理转换
+                    
             elif new_state == SystemStateEnum.ERROR:
                 reason = payload.get('reason', 'Unknown error')
                 self.logger.error(f"ACTION: 系统进入错误状态，原因: {reason}")
