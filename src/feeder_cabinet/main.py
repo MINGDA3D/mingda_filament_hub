@@ -537,9 +537,15 @@ class FeederCabinetApp:
             # 确保即使出错也不会阻止后续的状态更新
             # 不要在这里转换到ERROR状态，以免影响正常的错误恢复流程
 
-    async def _on_state_changed(self, old_state: SystemStateEnum, new_state: SystemStateEnum, payload: Dict[str, Any]):
+    def _on_state_changed(self, old_state: SystemStateEnum, new_state: SystemStateEnum, payload: Dict[str, Any]):
         """当状态机状态改变时，执行相应的动作"""
         self.logger.info(f"State Change: {old_state.name} -> {new_state.name} | Payload: {payload}")
+        
+        # 创建异步任务来处理状态变化的动作
+        asyncio.create_task(self._handle_state_change_actions(old_state, new_state, payload))
+    
+    async def _handle_state_change_actions(self, old_state: SystemStateEnum, new_state: SystemStateEnum, payload: Dict[str, Any]):
+        """异步处理状态变化的具体动作"""
         try:
             if new_state == SystemStateEnum.RUNOUT:
                 extruder = payload.get('extruder')
