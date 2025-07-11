@@ -460,7 +460,7 @@ class FeederCabinetApp:
                         
                         if klipper_state == 'printing' and self.state_manager.state == SystemStateEnum.IDLE:
                             self.state_manager.transition_to(SystemStateEnum.PRINTING)
-                        elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING]:
+                        elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING, SystemStateEnum.RUNOUT]:
                             self.state_manager.transition_to(SystemStateEnum.PAUSED)
                         elif klipper_state in ['complete', 'cancelled'] and self.state_manager.state != SystemStateEnum.IDLE:
                             self.state_manager.transition_to(SystemStateEnum.IDLE)
@@ -499,15 +499,38 @@ class FeederCabinetApp:
             
             # 处理打印中的断料事件
             if self.state_manager.state == SystemStateEnum.PRINTING:
+                # 获取当前活跃的挤出机
+                current_active_extruder = None
+                if 'toolhead' in status and 'extruder' in status['toolhead']:
+                    active_extruder_name = status['toolhead']['extruder']
+                    current_active_extruder = 0 if active_extruder_name == 'extruder' else 1
+                    self.klipper_monitor.active_extruder = current_active_extruder
+                else:
+                    current_active_extruder = self.klipper_monitor.active_extruder
+                
+                # 首先检查活跃挤出机的断料状态
+                runout_detected = False
+                active_extruder_runout = False
+                
                 for i, sensor_obj_name in enumerate(self.klipper_monitor.filament_sensor_objects):
                     if sensor_obj_name in status and 'filament_detected' in status[sensor_obj_name]:
                         has_filament = status[sensor_obj_name]['filament_detected']
                         if not has_filament:
-                            self.logger.info(f"检测到传感器 {sensor_obj_name} 断料事件。")
-                            target_state = SystemStateEnum.T1_RUNOUT if i == 0 else SystemStateEnum.T2_RUNOUT
-                            if not self.state_manager.is_state(target_state):
-                                self.state_manager.transition_to(target_state, extruder=i)
-                                break # 一次只处理一个断料事件
+                            if i == current_active_extruder:
+                                # 活跃挤出机断料，优先处理
+                                self.logger.info(f"检测到活跃挤出机 {i} 的传感器 {sensor_obj_name} 断料事件。")
+                                if not self.state_manager.is_state(SystemStateEnum.RUNOUT):
+                                    self.state_manager.transition_to(SystemStateEnum.RUNOUT, extruder=i)
+                                    active_extruder_runout = True
+                                    break
+                            else:
+                                # 非活跃挤出机断料，记录但不处理
+                                self.logger.info(f"检测到非活跃挤出机 {i} 的传感器 {sensor_obj_name} 断料，暂不处理。")
+                                runout_detected = True
+                
+                # 如果活跃挤出机没有断料，但有其他挤出机断料，记录警告
+                if runout_detected and not active_extruder_runout:
+                    self.logger.warning(f"非活跃挤出机有断料，但当前活跃挤出机 {current_active_extruder} 正常，继续打印。")
                             
         except Exception as e:
             self.logger.error(f"处理Klipper状态更新时发生错误: {str(e)}", exc_info=True)
@@ -518,7 +541,7 @@ class FeederCabinetApp:
         """当状态机状态改变时，执行相应的动作"""
         self.logger.info(f"State Change: {old_state.name} -> {new_state.name} | Payload: {payload}")
         try:
-            if new_state == SystemStateEnum.T1_RUNOUT or new_state == SystemStateEnum.T2_RUNOUT:
+            if new_state == SystemStateEnum.RUNOUT:
                 extruder = payload.get('extruder')
                 self.logger.info(f"ACTION: 为挤出机 {extruder} 断料事件暂停打印。")
                 if not await self.klipper_monitor.pause_print():
@@ -526,7 +549,7 @@ class FeederCabinetApp:
                     self.state_manager.transition_to(SystemStateEnum.ERROR, reason="Failed to pause print for runout")
             
             elif new_state == SystemStateEnum.PAUSED:
-                if old_state in [SystemStateEnum.T1_RUNOUT, SystemStateEnum.T2_RUNOUT]:
+                if old_state == SystemStateEnum.RUNOUT:
                     extruder = self.state_manager.get_payload().get('extruder')
                     self.logger.info(f"ACTION: 为挤出机 {extruder} 请求补料。")
                     if not await self.can_comm.request_feed(extruder=extruder):

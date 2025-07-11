@@ -9,8 +9,7 @@ class SystemStateEnum(Enum):
     IDLE = auto()              # 空闲
     PRINTING = auto()          # 打印中
     PAUSED = auto()            # 已暂停（普通暂停）
-    T1_RUNOUT = auto()         # T1挤出机断料
-    T2_RUNOUT = auto()         # T2挤出机断料
+    RUNOUT = auto()            # 断料
     FEEDING = auto()           # 送料中
     RESUMING = auto()          # 恢复打印中
     ERROR = auto()             # 错误状态
