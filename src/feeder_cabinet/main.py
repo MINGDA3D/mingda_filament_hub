@@ -565,6 +565,23 @@ class FeederCabinetApp:
                             self.logger.info("系统状态已从ERROR转换为IDLE")
                     else:
                         self.logger.debug(f"Klipper状态未变化，保持为: {klipper_state}")
+                        
+                        # 如果已经在PAUSED状态，检查是否需要补料
+                        if klipper_state == 'paused' and self.state_manager.state == SystemStateEnum.PAUSED:
+                            # 检查活跃挤出机的断料状态
+                            active_extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
+                            
+                            # 检查传感器状态缓存
+                            if hasattr(self, '_last_filament_status') and active_extruder < len(self.klipper_monitor.filament_sensor_objects):
+                                sensor_obj_name = self.klipper_monitor.filament_sensor_objects[active_extruder]
+                                if sensor_obj_name in self._last_filament_status:
+                                    filament_detected = self._last_filament_status[sensor_obj_name]
+                                    if not filament_detected:
+                                        # 活跃挤出机缺料，检查是否已经在送料中
+                                        if self.state_manager.state != SystemStateEnum.FEEDING:
+                                            self.logger.info(f"检测到活跃挤出机 {active_extruder} 在PAUSED状态下缺料，触发补料请求")
+                                            # 手动触发补料动作
+                                            asyncio.create_task(self._handle_paused_filament_runout(active_extruder))
 
             # 解析断料传感器状态
             filament_status_changed = False
@@ -640,6 +657,25 @@ class FeederCabinetApp:
         
         # 创建异步任务来处理状态变化的动作
         asyncio.create_task(self._handle_state_change_actions(old_state, new_state, payload))
+    
+    async def _handle_paused_filament_runout(self, extruder: int):
+        """处理PAUSED状态下检测到的断料情况"""
+        try:
+            # 将挤出机编号转换为料管编号
+            extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
+            tube_id = extruder_mapping.get(extruder, extruder)
+            
+            self.logger.info(f"ACTION: 检测到活跃挤出机 {extruder} 缺料，请求补料，对应料管ID: {tube_id}")
+            
+            if not await self.can_comm.request_feed(tube_id=tube_id):
+                self.logger.error(f"ACTION FAILED: 为挤出机 {extruder} (料管ID: {tube_id}) 请求补料失败！进入错误状态。")
+                self.state_manager.transition_to(SystemStateEnum.ERROR, reason=f"Failed to request feed for extruder {extruder}")
+            else:
+                self.logger.info(f"补料请求已发送，转换为FEEDING状态。")
+                self.state_manager.transition_to(SystemStateEnum.FEEDING, extruder=extruder)
+        except Exception as e:
+            self.logger.error(f"处理PAUSED状态断料时出错: {e}", exc_info=True)
+            self.state_manager.transition_to(SystemStateEnum.ERROR, reason=str(e))
     
     async def _handle_state_change_actions(self, old_state: SystemStateEnum, new_state: SystemStateEnum, payload: Dict[str, Any]):
         """异步处理状态变化的具体动作"""
