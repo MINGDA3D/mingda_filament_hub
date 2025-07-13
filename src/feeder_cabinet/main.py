@@ -980,10 +980,15 @@ class FeederCabinetApp:
                         # 更新缓存
                         self._last_printer_state = klipper_state
                         
-                        # 如果初始状态是printing，也要同步系统状态
+                        # 同步系统状态
                         if klipper_state == 'printing':
                             self.logger.info("初始化时检测到打印中状态，同步系统状态为PRINTING")
                             self.state_manager.transition_to(SystemStateEnum.PRINTING)
+                        elif klipper_state == 'paused':
+                            self.logger.info("初始化时检测到暂停状态，同步系统状态为PAUSED")
+                            # 获取当前活跃挤出机信息
+                            active_extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
+                            self.state_manager.transition_to(SystemStateEnum.PAUSED, extruder=active_extruder)
                     
                     # 发送余料状态
                     await self._send_filament_status_notification()
