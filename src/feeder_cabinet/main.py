@@ -549,13 +549,9 @@ class FeederCabinetApp:
                         if klipper_state == 'printing' and self.state_manager.state in [SystemStateEnum.IDLE, SystemStateEnum.RESUMING]:
                             self.state_manager.transition_to(SystemStateEnum.PRINTING)
                         elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING, SystemStateEnum.RUNOUT]:
-                            # 如果是从断料相关状态转换过来，使用当前活跃挤出机
-                            if self.state_manager.state == SystemStateEnum.RUNOUT:
-                                # 优先使用当前活跃挤出机
-                                active_extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
-                                self.state_manager.transition_to(SystemStateEnum.PAUSED, extruder=active_extruder)
-                            else:
-                                self.state_manager.transition_to(SystemStateEnum.PAUSED)
+                            # 总是传递当前活跃挤出机信息，以便在PAUSED状态处理时能正确检查断料状态
+                            active_extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
+                            self.state_manager.transition_to(SystemStateEnum.PAUSED, extruder=active_extruder)
                         elif klipper_state in ['complete', 'cancelled'] and self.state_manager.state != SystemStateEnum.IDLE:
                             self.state_manager.transition_to(SystemStateEnum.IDLE)
                         elif klipper_state == 'error' and self.state_manager.state != SystemStateEnum.ERROR:
