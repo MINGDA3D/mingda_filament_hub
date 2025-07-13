@@ -525,6 +525,15 @@ class FeederCabinetApp:
             else:
                 self.logger.debug("状态更新中没有print_stats")
             
+            # 首先更新当前活跃的挤出机，确保后续逻辑使用最新的活跃挤出机信息
+            if 'toolhead' in status and 'extruder' in status['toolhead']:
+                active_extruder_name = status['toolhead']['extruder']
+                new_active_extruder = 0 if active_extruder_name == 'extruder' else 1
+                if self.klipper_monitor.active_extruder != new_active_extruder:
+                    self.logger.info(f"[IMPORTANT] 活跃挤出机切换: {self.klipper_monitor.active_extruder} -> {new_active_extruder} (名称: {active_extruder_name})")
+                self.klipper_monitor.active_extruder = new_active_extruder
+                self.logger.debug(f"[DEBUG] 更新活跃挤出机: active_extruder_name={active_extruder_name}, active_extruder={new_active_extruder}")
+            
             # 解析打印机状态
             if 'print_stats' in status:
                 klipper_state = status['print_stats'].get('state')
@@ -582,14 +591,8 @@ class FeederCabinetApp:
             if filament_status_changed:
                 asyncio.create_task(self._send_filament_status_notification())
             
-            # 获取当前活跃的挤出机
-            current_active_extruder = None
-            if 'toolhead' in status and 'extruder' in status['toolhead']:
-                active_extruder_name = status['toolhead']['extruder']
-                current_active_extruder = 0 if active_extruder_name == 'extruder' else 1
-                self.klipper_monitor.active_extruder = current_active_extruder
-            else:
-                current_active_extruder = self.klipper_monitor.active_extruder
+            # 使用已经更新的活跃挤出机信息
+            current_active_extruder = self.klipper_monitor.active_extruder
                 
             # 处理打印中的断料事件
             if self.state_manager.state == SystemStateEnum.PRINTING:
@@ -601,6 +604,7 @@ class FeederCabinetApp:
                     if sensor_obj_name in status and 'filament_detected' in status[sensor_obj_name]:
                         has_filament = status[sensor_obj_name]['filament_detected']
                         if not has_filament:
+                            self.logger.debug(f"[DEBUG] 传感器 {sensor_obj_name} (索引{i}) 检测到断料, 当前活跃挤出机={current_active_extruder}")
                             if i == current_active_extruder:
                                 # 活跃挤出机断料，优先处理
                                 self.logger.info(f"检测到活跃挤出机 {i} 的传感器 {sensor_obj_name} 断料事件。")
@@ -655,6 +659,7 @@ class FeederCabinetApp:
                 if old_state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING, SystemStateEnum.RUNOUT]:
                     # 优先使用当前活跃挤出机
                     extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
+                    self.logger.debug(f"[DEBUG] PAUSED状态处理: old_state={old_state}, active_extruder={extruder}")
                     
                     # 检查当前活跃挤出机的断料传感器状态
                     filament_detected = True  # 默认假设有料
@@ -665,6 +670,8 @@ class FeederCabinetApp:
                         # 检查活跃挤出机对应的传感器状态
                         if extruder < len(self.klipper_monitor.filament_sensor_objects):
                             sensor_obj_name = self.klipper_monitor.filament_sensor_objects[extruder]
+                            self.logger.debug(f"[DEBUG] 检查传感器: extruder={extruder}, sensor_obj_name={sensor_obj_name}")
+                            self.logger.debug(f"[DEBUG] 缓存的传感器状态: {self._last_filament_status}")
                             if sensor_obj_name in self._last_filament_status:
                                 filament_detected = self._last_filament_status[sensor_obj_name]
                                 sensor_status_available = True
