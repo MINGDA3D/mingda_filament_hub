@@ -548,7 +548,7 @@ class FeederCabinetApp:
                         
                         if klipper_state == 'printing' and self.state_manager.state in [SystemStateEnum.IDLE, SystemStateEnum.RESUMING]:
                             self.state_manager.transition_to(SystemStateEnum.PRINTING)
-                        elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.PRINTING, SystemStateEnum.RESUMING, SystemStateEnum.RUNOUT]:
+                        elif klipper_state == 'paused' and self.state_manager.state in [SystemStateEnum.IDLE, SystemStateEnum.PRINTING, SystemStateEnum.RESUMING, SystemStateEnum.RUNOUT]:
                             # 总是传递当前活跃挤出机信息，以便在PAUSED状态处理时能正确检查断料状态
                             active_extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
                             self.state_manager.transition_to(SystemStateEnum.PAUSED, extruder=active_extruder)
@@ -979,6 +979,11 @@ class FeederCabinetApp:
                         await self._send_printer_status_notification(klipper_state)
                         # 更新缓存
                         self._last_printer_state = klipper_state
+                        
+                        # 如果初始状态是printing，也要同步系统状态
+                        if klipper_state == 'printing':
+                            self.logger.info("初始化时检测到打印中状态，同步系统状态为PRINTING")
+                            self.state_manager.transition_to(SystemStateEnum.PRINTING)
                     
                     # 发送余料状态
                     await self._send_filament_status_notification()
@@ -990,9 +995,12 @@ class FeederCabinetApp:
             # 启动状态同步检查任务
             asyncio.create_task(self._state_sync_check_task())
             
-            # 标记为运行中
-            self.state_manager.transition_to(SystemStateEnum.IDLE)
-            self.logger.info("应用程序已启动，进入空闲状态")
+            # 如果系统还在STARTING状态，才转换到IDLE（避免覆盖已经设置的PRINTING状态）
+            if self.state_manager.state == SystemStateEnum.STARTING:
+                self.state_manager.transition_to(SystemStateEnum.IDLE)
+                self.logger.info("应用程序已启动，进入空闲状态")
+            else:
+                self.logger.info(f"应用程序已启动，当前状态: {self.state_manager.state.name}")
             
             return True
         except Exception as e:
