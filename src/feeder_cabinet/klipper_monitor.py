@@ -85,6 +85,7 @@ class KlipperMonitor:
         
         # 回调函数
         self.status_callbacks: List[Callable[[Dict], Coroutine]] = []
+        self.disconnect_callback: Optional[Callable[[], Coroutine]] = None
         
         # 重连任务
         self.reconnect_task: Optional[asyncio.Task] = None
@@ -198,6 +199,13 @@ class KlipperMonitor:
             self.printer_state = "unknown"
             self.logger.info("WebSocket断开，已清除打印机状态缓存")
             
+            # 通知断开回调
+            if self.disconnect_callback:
+                try:
+                    await self.disconnect_callback()
+                except Exception as e:
+                    self.logger.error(f"断开回调执行失败: {e}", exc_info=True)
+            
             # 停止定时查询任务（如果正在运行）
             if self.periodic_query_task and not self.periodic_query_task.done():
                 self.periodic_query_task.cancel()
@@ -234,34 +242,7 @@ class KlipperMonitor:
                 # 尝试重连
                 if await self.connect():
                     self.logger.info("重连成功")
-                    
-                    # 重连成功后，强制触发一次状态更新
-                    # 等待一下让订阅响应返回
-                    await asyncio.sleep(1.0)
-                    
-                    # 获取当前状态并通知回调
-                    printer_status = self.get_printer_status()
-                    if printer_status and self.status_callbacks:
-                        self.logger.info("重连后强制发送当前状态更新")
-                        # 构造一个包含当前状态的更新消息
-                        status_update = {}
-                        if printer_status.get('printer_state'):
-                            status_update['print_stats'] = {'state': printer_status['printer_state']}
-                        if printer_status.get('toolhead'):
-                            status_update['toolhead'] = printer_status['toolhead']
-                        if printer_status.get('filament_sensors_status'):
-                            # 添加断料传感器状态
-                            for i, sensor_name in enumerate(self.filament_sensor_names):
-                                if i < len(self.filament_sensor_objects):
-                                    sensor_obj = self.filament_sensor_objects[i]
-                                    status_update[sensor_obj] = {
-                                        'filament_detected': printer_status['filament_sensors_status'].get(sensor_name, True)
-                                    }
-                        
-                        # 触发所有状态回调
-                        for callback in self.status_callbacks:
-                            asyncio.create_task(callback(status_update))
-                    
+                    # 订阅响应会自动触发状态更新，不需要额外的强制发送
                     break
                     
             except asyncio.CancelledError:
@@ -574,6 +555,10 @@ class KlipperMonitor:
     def unregister_status_callback(self, callback: Callable):
         if callback in self.status_callbacks:
             self.status_callbacks.remove(callback)
+    
+    def register_disconnect_callback(self, callback: Callable[[], Coroutine]):
+        """注册断开连接回调"""
+        self.disconnect_callback = callback
             
     async def execute_gcode(self, command: str) -> bool:
         return await self._send_gcode(command)

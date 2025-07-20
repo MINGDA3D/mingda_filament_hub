@@ -431,6 +431,13 @@ class FeederCabinetApp:
             self.logger.error(f"挤出料丝时发生错误: {e}", exc_info=True)
             return False
 
+    async def _handle_klipper_disconnect(self):
+        """处理Klipper断开连接事件"""
+        self.logger.info("处理Klipper断开连接事件，清除打印机状态缓存")
+        # 清除主程序的状态缓存，确保重连后能正确检测状态变化
+        self._last_printer_state = None
+        self.logger.info("已清除主程序打印机状态缓存")
+    
     async def _handle_can_reconnect(self):
         """处理CAN重连成功事件"""
         self.logger.info("处理CAN重连成功事件")
@@ -809,6 +816,7 @@ class FeederCabinetApp:
                 extruder_config=self.config.get('extruders', None)
             )
             self.klipper_monitor.register_status_callback(self._handle_klipper_status_update)
+            self.klipper_monitor.register_disconnect_callback(self._handle_klipper_disconnect)
             
             # 为Klipper监控模块设置logger
             self.klipper_monitor.logger = self.log_manager.get_child_logger(self.logger, "klipper")
