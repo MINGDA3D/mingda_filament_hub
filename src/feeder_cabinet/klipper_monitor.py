@@ -42,6 +42,7 @@ class KlipperMonitor:
         self.reconnect_interval = 5
         self.connection_lock = asyncio.Lock()
         self.ws_task: Optional[asyncio.Task] = None
+        self.send_lock = asyncio.Lock()  # 新增：用于保护WebSocket发送操作
         
         # 定时查询相关
         self.periodic_query_task: Optional[asyncio.Task] = None
@@ -85,6 +86,36 @@ class KlipperMonitor:
         # 回调函数
         self.status_callbacks: List[Callable[[Dict], Coroutine]] = []
 
+    async def _cleanup_old_connection(self):
+        """清理旧的连接和任务"""
+        # 停止定时查询任务
+        if self.periodic_query_task and not self.periodic_query_task.done():
+            self.periodic_query_task.cancel()
+            try:
+                await self.periodic_query_task
+            except asyncio.CancelledError:
+                pass
+            self.periodic_query_task = None
+        
+        # 停止WebSocket处理任务
+        if self.ws_task and not self.ws_task.done():
+            self.ws_task.cancel()
+            try:
+                await self.ws_task
+            except asyncio.CancelledError:
+                pass
+            self.ws_task = None
+        
+        # 关闭旧的WebSocket连接
+        if self.ws:
+            try:
+                await self.ws.close()
+            except Exception:
+                pass
+            self.ws = None
+        
+        self.ws_connected = False
+
     async def connect(self) -> bool:
         """连接到Klipper/Moonraker"""
         if self.ws_connected:
@@ -93,6 +124,9 @@ class KlipperMonitor:
         async with self.connection_lock:
             if self.ws_connected:
                 return True
+            
+            # 清理旧的任务和连接
+            await self._cleanup_old_connection()
             
             self.logger.info(f"正在连接到WebSocket: {self.ws_url}")
             try:
@@ -145,6 +179,14 @@ class KlipperMonitor:
                 except asyncio.CancelledError:
                     pass
                 self.periodic_query_task = None
+                
+            # 清理 WebSocket 连接
+            if self.ws:
+                try:
+                    await self.ws.close()
+                except Exception:
+                    pass
+                self.ws = None
                 
             if self.auto_reconnect:
                 self.logger.info(f"将在 {self.reconnect_interval} 秒后尝试重连...")
@@ -248,7 +290,8 @@ class KlipperMonitor:
             }
             
             self.logger.info("主动查询当前打印机状态")
-            await self.ws.send(json.dumps(query_request))
+            async with self.send_lock:
+                await self.ws.send(json.dumps(query_request))
             
         except Exception as e:
             self.logger.error(f"查询打印机状态时发生错误: {str(e)}")
@@ -282,7 +325,8 @@ class KlipperMonitor:
                         query_request["params"]["objects"][sensor_obj] = None
                     
                     self.logger.debug(f"定时查询打印机状态 (间隔: {self.query_interval}秒)")
-                    await self.ws.send(json.dumps(query_request))
+                    async with self.send_lock:
+                        await self.ws.send(json.dumps(query_request))
                     
             except asyncio.CancelledError:
                 self.logger.info("定时查询任务被取消")
@@ -332,7 +376,8 @@ class KlipperMonitor:
             # 调试日志：记录完整的订阅请求
             self.logger.debug(f"发送订阅请求: {json.dumps(subscribe_request, ensure_ascii=False)}")
             
-            await self.ws.send(json.dumps(subscribe_request))
+            async with self.send_lock:
+                await self.ws.send(json.dumps(subscribe_request))
             self.logger.info("已发送WebSocket订阅请求")
         except websockets.exceptions.ConnectionClosed:
             self.logger.error("订阅对象时连接已关闭")
@@ -355,7 +400,8 @@ class KlipperMonitor:
                 "params": {"script": command},
                 "id": self._get_next_request_id()
             }
-            await self.ws.send(json.dumps(gcode_request))
+            async with self.send_lock:
+                await self.ws.send(json.dumps(gcode_request))
             self.logger.info(f"成功发送G-code: {command}")
             return True
         except websockets.exceptions.ConnectionClosed:
