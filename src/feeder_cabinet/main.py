@@ -26,12 +26,14 @@ try:
     from feeder_cabinet.klipper_monitor import KlipperMonitor
     from feeder_cabinet.log_manager import LogManager
     from feeder_cabinet.state_manager import StateManager, SystemStateEnum
+    from feeder_cabinet.rfid_parser import RFIDDataParser, OpenTagFilamentData
 except ImportError:
     # 如果从包导入失败，尝试相对导入
     from .can_communication import FeederCabinetCAN
     from .klipper_monitor import KlipperMonitor
     from .log_manager import LogManager
     from .state_manager import StateManager, SystemStateEnum
+    from .rfid_parser import RFIDDataParser, OpenTagFilamentData
 
 # 配置默认参数
 DEFAULT_CONFIG_PATH = "/home/mingda/feeder_cabinet_help/config/config.yaml"
@@ -80,6 +82,7 @@ class FeederCabinetApp:
         # 组件实例
         self.can_comm = None
         self.klipper_monitor = None
+        self.rfid_parser = None  # RFID解析器
         
         # 运行状态 (由state_manager替代)
         # self.running = False
@@ -93,6 +96,9 @@ class FeederCabinetApp:
         
         # 打印机状态缓存
         self._last_printer_state = None
+        
+        # RFID数据缓存
+        self._rfid_data_cache = {}  # 按挤出机ID存储的耗材信息
     
     
     
@@ -523,6 +529,223 @@ class FeederCabinetApp:
             if self.can_comm:
                 await self.can_comm.send_feeder_mapping_response(0, 0, 1)
     
+    async def _handle_rfid_message(self, data: dict):
+        """
+        处理RFID CAN消息
+        
+        Args:
+            data: 包含命令和数据的字典
+        """
+        try:
+            # 从CAN消息中提取数据
+            can_data = bytes(data['data'])
+            
+            # 使用RFID解析器处理消息
+            result = self.rfid_parser.handle_rfid_message(can_data)
+            
+            if result:
+                if result['type'] == 'rfid_start':
+                    self.logger.info(f"开始接收RFID数据: 挤出机{result['extruder_id']}, "
+                                   f"耗材通道{result['filament_id']}, "
+                                   f"数据源: {result['data_source']}")
+                    
+                elif result['type'] == 'rfid_packet':
+                    self.logger.debug(f"接收RFID数据包 {result['packet_num']}/{result['total_packets']}")
+                    
+                elif result['type'] == 'rfid_complete':
+                    self.logger.info("RFID数据接收完成!")
+                    await self._process_filament_data(result['extruder_id'], 
+                                                   result['filament_id'], 
+                                                   result['data'])
+                    
+                elif result['type'] == 'rfid_error':
+                    self.logger.error(f"RFID错误: {result.get('error_msg', result.get('error'))}")
+                    
+        except Exception as e:
+            self.logger.error(f"处理RFID消息时发生错误: {e}", exc_info=True)
+    
+    async def _process_filament_data(self, extruder_id: int, filament_id: int, 
+                                  data: OpenTagFilamentData):
+        """
+        处理解析后的耗材数据
+        
+        Args:
+            extruder_id: 挤出机ID
+            filament_id: 耗材通道ID
+            data: OpenTag格式的耗材数据
+        """
+        try:
+            self.logger.info("=" * 60)
+            self.logger.info(f"挤出机 {extruder_id} 耗材信息 (通道 {filament_id}):")
+            self.logger.info("=" * 60)
+            
+            # 基本信息
+            self.logger.info(f"制造商: {data.manufacturer}")
+            self.logger.info(f"材料类型: {data.material_name}")
+            self.logger.info(f"颜色: {data.color_name}")
+            
+            # 规格参数
+            self.logger.info(f"直径: {data.diameter_target/1000:.2f} mm")
+            self.logger.info(f"标称重量: {data.weight_nominal} g")
+            self.logger.info(f"密度: {data.density/1000:.3f} g/cm³")
+            
+            # 温度参数
+            self.logger.info(f"打印温度: {data.print_temp}°C")
+            self.logger.info(f"热床温度: {data.bed_temp}°C")
+            
+            # 可选参数
+            if data.serial_number:
+                self.logger.info(f"序列号: {data.serial_number}")
+                
+            if data.empty_spool_weight is not None:
+                self.logger.info(f"空线轴重量: {data.empty_spool_weight} g")
+                
+            if data.filament_weight_measured is not None:
+                self.logger.info(f"实测耗材重量: {data.filament_weight_measured} g")
+                
+            if data.filament_length_measured is not None:
+                self.logger.info(f"实测耗材长度: {data.filament_length_measured} m")
+                
+            if data.max_dry_temp is not None:
+                self.logger.info(f"最大干燥温度: {data.max_dry_temp}°C")
+                
+            if data.color_hex is not None:
+                self.logger.info(f"颜色值: #{data.color_hex:06X}")
+                
+            self.logger.info("=" * 60)
+            
+            # 缓存耗材数据
+            self._rfid_data_cache[extruder_id] = {
+                'timestamp': time.time(),
+                'filament_id': filament_id,
+                'data': data
+            }
+            
+            # 保存耗材信息到文件（可选）
+            await self._save_filament_info(extruder_id, data)
+            
+            # 如果配置了自动设置温度，应用耗材温度设置
+            if self.config.get('rfid', {}).get('auto_set_temperature', False):
+                await self._apply_filament_temperature(extruder_id, data)
+                
+        except Exception as e:
+            self.logger.error(f"处理耗材数据时发生错误: {e}", exc_info=True)
+    
+    async def _save_filament_info(self, extruder_id: int, data: OpenTagFilamentData):
+        """
+        保存耗材信息到文件
+        
+        Args:
+            extruder_id: 挤出机ID
+            data: 耗材数据
+        """
+        try:
+            # 确保目录存在
+            data_dir = self.config.get('rfid', {}).get('data_dir', '/home/mingda/printer_data/rfid')
+            os.makedirs(data_dir, exist_ok=True)
+            
+            # 构建文件路径
+            filename = os.path.join(data_dir, f'filament_extruder_{extruder_id}.json')
+            
+            # 准备数据
+            info = {
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'extruder_id': extruder_id,
+                'manufacturer': data.manufacturer,
+                'material': data.material_name,
+                'color': data.color_name,
+                'diameter': data.diameter_target / 1000,  # 转换为mm
+                'weight_nominal': data.weight_nominal,
+                'density': data.density / 1000,  # 转换为g/cm³
+                'print_temp': data.print_temp,
+                'bed_temp': data.bed_temp,
+                'serial_number': data.serial_number,
+                'empty_spool_weight': data.empty_spool_weight,
+                'max_dry_temp': data.max_dry_temp
+            }
+            
+            # 保存到文件
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(info, f, indent=2, ensure_ascii=False)
+                
+            self.logger.info(f"耗材信息已保存到: {filename}")
+            
+        except Exception as e:
+            self.logger.error(f"保存耗材信息时发生错误: {e}", exc_info=True)
+    
+    async def _apply_filament_temperature(self, extruder_id: int, data: OpenTagFilamentData):
+        """
+        应用耗材温度设置到打印机
+        
+        Args:
+            extruder_id: 挤出机ID
+            data: 耗材数据
+        """
+        try:
+            if not self.klipper_monitor or not self.klipper_monitor.ws_connected:
+                self.logger.warning("Klipper未连接，无法应用温度设置")
+                return
+                
+            # 设置挤出机温度
+            if extruder_id == 0:
+                gcode = f"M104 T0 S{data.print_temp}"
+            else:
+                gcode = f"M104 T1 S{data.print_temp}"
+            
+            await self.klipper_monitor.execute_gcode(gcode)
+            self.logger.info(f"已设置挤出机{extruder_id}温度为 {data.print_temp}°C")
+            
+            # 设置热床温度（仅对挤出机0设置）
+            if extruder_id == 0:
+                gcode = f"M140 S{data.bed_temp}"
+                await self.klipper_monitor.execute_gcode(gcode)
+                self.logger.info(f"已设置热床温度为 {data.bed_temp}°C")
+                
+        except Exception as e:
+            self.logger.error(f"应用温度设置时发生错误: {e}", exc_info=True)
+    
+    async def request_rfid_data(self, extruder_id: int):
+        """
+        主动请求指定挤出机的RFID数据
+        
+        Args:
+            extruder_id: 挤出机ID
+        """
+        try:
+            if not self.can_comm or not self.can_comm.connected:
+                self.logger.warning("CAN未连接，无法请求RFID数据")
+                return
+                
+            self.logger.info(f"请求挤出机 {extruder_id} 的RFID数据...")
+            
+            if await self.can_comm.request_rfid_data(extruder_id):
+                self.logger.info("RFID数据请求已发送")
+            else:
+                self.logger.error("RFID数据请求发送失败")
+                
+        except Exception as e:
+            self.logger.error(f"请求RFID数据时发生错误: {e}", exc_info=True)
+    
+    async def _cleanup_rfid_sessions(self):
+        """定期清理超时的RFID传输会话"""
+        cleanup_interval = 30  # 每30秒清理一次
+        
+        while self.state_manager.state != SystemStateEnum.DISCONNECTED:
+            try:
+                await asyncio.sleep(cleanup_interval)
+                
+                if self.rfid_parser:
+                    self.rfid_parser.cleanup_expired_sessions()
+                    self.logger.debug("已执行RFID会话清理")
+                    
+            except asyncio.CancelledError:
+                self.logger.info("RFID会话清理任务被取消")
+                break
+            except Exception as e:
+                self.logger.error(f"清理RFID会话时发生错误: {e}", exc_info=True)
+                
+        self.logger.info("RFID会话清理任务结束")
+    
     async def _handle_klipper_status_update(self, status: Dict[str, Any]):
         """处理来自KlipperMonitor的状态更新，并驱动状态机"""
         try:
@@ -805,9 +1028,15 @@ class FeederCabinetApp:
             self.can_comm.set_query_callback(self._handle_filament_status_query)
             self.can_comm.set_mapping_set_callback(self._handle_feeder_mapping_set)
             self.can_comm.set_reconnect_callback(self._handle_can_reconnect)
+            self.can_comm.set_rfid_callback(self._handle_rfid_message)  # 设置RFID回调
             
             # 为CAN通信模块设置logger
             self.can_comm.logger = self.log_manager.get_child_logger(self.logger, "can")
+            
+            # 初始化RFID解析器
+            self.logger.info("初始化RFID解析器")
+            self.rfid_parser = RFIDDataParser()
+            self.rfid_parser.logger = self.log_manager.get_child_logger(self.logger, "rfid")
             
             # 初始化Klipper监控器
             klipper_config = self.config['klipper']
@@ -1021,6 +1250,10 @@ class FeederCabinetApp:
             
             # 启动状态同步检查任务
             asyncio.create_task(self._state_sync_check_task())
+            
+            # 启动RFID会话清理任务
+            asyncio.create_task(self._cleanup_rfid_sessions())
+            self.logger.info("启动RFID会话清理任务")
             
             # 如果系统还在STARTING状态，才转换到IDLE（避免覆盖已经设置的PRINTING状态）
             if self.state_manager.state == SystemStateEnum.STARTING:

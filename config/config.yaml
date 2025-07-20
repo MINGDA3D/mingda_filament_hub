@@ -91,4 +91,21 @@ safety:
 # 系统配置
 system:
   # 守护进程模式，设置为true则在后台运行
-  daemon: false 
+  daemon: false
+
+# RFID配置
+rfid:
+  # 是否启用RFID功能
+  enabled: true
+  
+  # 是否自动设置耗材温度
+  auto_set_temperature: false
+  
+  # RFID数据保存目录
+  data_dir: /home/mingda/printer_data/rfid
+  
+  # RFID传输超时时间（秒）
+  transfer_timeout: 10.0
+  
+  # 会话清理间隔（秒）
+  cleanup_interval: 30 
