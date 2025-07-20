@@ -433,10 +433,12 @@ class FeederCabinetApp:
 
     async def _handle_klipper_disconnect(self):
         """处理Klipper断开连接事件"""
-        self.logger.info("处理Klipper断开连接事件，清除打印机状态缓存")
+        self.logger.info("处理Klipper断开连接事件，清除状态缓存")
         # 清除主程序的状态缓存，确保重连后能正确检测状态变化
         self._last_printer_state = None
-        self.logger.info("已清除主程序打印机状态缓存")
+        # 清除断料传感器状态缓存
+        self._last_filament_status = {}
+        self.logger.info("已清除主程序打印机状态和断料传感器状态缓存")
     
     async def _handle_can_reconnect(self):
         """处理CAN重连成功事件"""
