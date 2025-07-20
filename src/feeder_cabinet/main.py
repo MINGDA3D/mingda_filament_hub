@@ -959,13 +959,23 @@ class FeederCabinetApp:
                 self.logger.info("CAN连接成功，发送初始状态给送料柜")
                 await self.can_comm.send_message(self.can_comm.CMD_PRINTER_IDLE)
                 
-            # 连接Klipper，但不将其视为致命错误
-            if not await self.klipper_monitor.connect():
-                self.logger.warning("初次连接Klipper失败，系统将在后台自动重连。")
-                # 程序继续运行，依赖后台重连
-            else:
-                self.logger.info("成功连接到Klipper。")
-                
+            # 连接Klipper，增加重试机制
+            klipper_connected = False
+            retry_interval = 5  # 重试间隔5秒
+            self.logger.info("正在尝试连接到Klipper...")
+            while not klipper_connected and self.state_manager.state != SystemStateEnum.DISCONNECTED:
+                if await self.klipper_monitor.connect():
+                    klipper_connected = True
+                    self.logger.info("成功连接到Klipper。")
+                else:
+                    self.logger.warning(f"连接Klipper失败，将在 {retry_interval} 秒后重试...")
+                    try:
+                        await asyncio.sleep(retry_interval)
+                    except asyncio.CancelledError:
+                        self.logger.info("Klipper连接任务被取消。")
+                        break
+            
+            if klipper_connected:
                 # 如果CAN已连接，发送当前打印状态和余料状态
                 if self.can_comm and self.can_comm.connected:
                     # 等待一下让Klipper状态稳定
@@ -992,6 +1002,8 @@ class FeederCabinetApp:
                     
                     # 发送余料状态
                     await self._send_filament_status_notification()
+            else:
+                self.logger.error("在指定时间内未能连接到Klipper，程序将继续运行，但无法与打印机交互，请检查Klipper/Moonraker服务状态。")
 
             # 启动Klipper监控
             update_interval = self.config['klipper']['update_interval']
