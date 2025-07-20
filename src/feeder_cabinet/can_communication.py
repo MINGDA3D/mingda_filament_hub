@@ -54,6 +54,14 @@ class FeederCabinetCAN:
     CMD_QUERY_FEEDER_MAPPING           = 0x10       # 查询料管与挤出机对应关系
     CMD_FEEDER_MAPPING_RESPONSE        = 0x11       # 料管与挤出机对应关系响应
     
+    # RFID相关命令
+    CMD_RFID_RAW_DATA_NOTIFY   = 0x14       # 主动通知RFID原始数据（起始包）
+    CMD_RFID_RAW_DATA_REQUEST  = 0x15       # 请求RFID原始数据
+    CMD_RFID_RAW_DATA_RESPONSE = 0x16       # RFID原始数据响应（起始包）
+    CMD_RFID_DATA_PACKET       = 0x17       # RFID数据包
+    CMD_RFID_DATA_END          = 0x18       # RFID数据传输结束
+    CMD_RFID_READ_ERROR        = 0x19       # RFID读取错误
+    
     def __init__(self, interface: str = 'can0', bitrate: int = 1000000):
         """
         初始化CAN通信类
@@ -85,6 +93,7 @@ class FeederCabinetCAN:
         self.mapping_response_callback: Optional[Callable[[Dict], Coroutine]] = None
         self.mapping_set_callback: Optional[Callable[[Dict], Coroutine]] = None
         self.reconnect_callback: Optional[Callable[[], Coroutine]] = None  # 重连成功回调
+        self.rfid_callback: Optional[Callable[[Dict], Coroutine]] = None  # RFID数据回调
         
         # 异步任务和锁
         self.rx_task: Optional[asyncio.Task] = None
@@ -326,6 +335,15 @@ class FeederCabinetCAN:
                                     'status': msg.data[3]
                                 }
                                 asyncio.create_task(self.mapping_set_callback(mapping_data))
+                        elif command in [self.CMD_RFID_RAW_DATA_NOTIFY, self.CMD_RFID_RAW_DATA_RESPONSE, 
+                                       self.CMD_RFID_DATA_PACKET, self.CMD_RFID_DATA_END, self.CMD_RFID_READ_ERROR]:
+                            # RFID相关消息
+                            if self.rfid_callback:
+                                rfid_data = {
+                                    'command': command,
+                                    'data': list(msg.data)
+                                }
+                                asyncio.create_task(self.rfid_callback(rfid_data))
                         else:
                             # 检查是否为心跳响应 (根据你的candump，响应格式为: 05 00 FA E2 7E)
                             if len(msg.data) >= 1 and msg.data[0] == 0x05:
@@ -482,6 +500,15 @@ class FeederCabinetCAN:
             callback: 重连成功回调函数
         """
         self.reconnect_callback = callback
+    
+    def set_rfid_callback(self, callback: Callable[[Dict], Coroutine]):
+        """
+        设置RFID数据回调函数
+        
+        Args:
+            callback: RFID数据回调函数，接收包含命令和数据的字典
+        """
+        self.rfid_callback = callback
     
     async def _send_with_retry(self, msg: 'can.Message', retries: int = 3, retry_delay: float = 0.05) -> bool:
         """
@@ -766,4 +793,37 @@ class FeederCabinetCAN:
             
         except Exception as e:
             self.logger.error(f"构建或发送料管映射响应时失败: {str(e)}")
+            return False
+    
+    async def request_rfid_data(self, extruder_id: int) -> bool:
+        """
+        请求指定挤出机的RFID数据
+        
+        Args:
+            extruder_id: 挤出机编号
+            
+        Returns:
+            bool: 请求是否成功发送
+        """
+        if not self.connected or not self.bus:
+            self.logger.error("未连接到CAN总线，无法发送消息")
+            return False
+            
+        try:
+            data = [self.CMD_RFID_RAW_DATA_REQUEST, 0x00, extruder_id, 0x00, 0x00, 0x00, 0x00, 0x00]
+            
+            msg = can.Message(
+                arbitration_id=self.SEND_ID,
+                data=data,
+                is_extended_id=False
+            )
+
+            if await self._send_with_retry(msg):
+                self.logger.info(f"已发送RFID数据请求: 挤出机{extruder_id}")
+                return True
+            else:
+                return False
+            
+        except Exception as e:
+            self.logger.error(f"构建或发送RFID数据请求时失败: {str(e)}")
             return False 
