@@ -85,6 +85,9 @@ class KlipperMonitor:
         
         # 回调函数
         self.status_callbacks: List[Callable[[Dict], Coroutine]] = []
+        
+        # 重连任务
+        self.reconnect_task: Optional[asyncio.Task] = None
 
     async def _cleanup_old_connection(self):
         """清理旧的连接和任务"""
@@ -105,6 +108,15 @@ class KlipperMonitor:
             except asyncio.CancelledError:
                 pass
             self.ws_task = None
+        
+        # 停止重连任务
+        if self.reconnect_task and not self.reconnect_task.done():
+            self.reconnect_task.cancel()
+            try:
+                await self.reconnect_task
+            except asyncio.CancelledError:
+                pass
+            self.reconnect_task = None
         
         # 关闭旧的WebSocket连接
         if self.ws:
@@ -150,12 +162,23 @@ class KlipperMonitor:
             except (websockets.exceptions.InvalidURI, websockets.exceptions.WebSocketException, OSError) as e:
                 self.logger.error(f"连接WebSocket失败: {e}")
                 self.ws_connected = False
+                self.ws = None  # 确保ws为None
+                
+                # 如果自动重连启用，启动重连任务
+                if self.auto_reconnect and not self.reconnect_task:
+                    self.reconnect_task = asyncio.create_task(self._reconnect_loop())
+                
                 return False
 
     async def _ws_handler(self):
         """处理WebSocket连接的读取和重连"""
         while self.auto_reconnect:
             try:
+                # 检查ws是否存在
+                if not self.ws or not self.ws_connected:
+                    self.logger.debug("WebSocket未连接，等待重连...")
+                    break
+                    
                 async for message in self.ws:
                     try:
                         await self._process_ws_message(message)
@@ -193,6 +216,29 @@ class KlipperMonitor:
                 await asyncio.sleep(self.reconnect_interval)
                 await self.connect()
         self.logger.info("WebSocket处理任务已结束")
+    
+    async def _reconnect_loop(self):
+        """独立的重连循环任务"""
+        self.logger.info("启动自动重连循环")
+        
+        while self.auto_reconnect:
+            try:
+                # 等待重连间隔
+                self.logger.info(f"将在 {self.reconnect_interval} 秒后尝试重连...")
+                await asyncio.sleep(self.reconnect_interval)
+                
+                # 尝试重连
+                if await self.connect():
+                    self.logger.info("重连成功")
+                    break
+                    
+            except asyncio.CancelledError:
+                self.logger.info("重连任务被取消")
+                break
+            except Exception as e:
+                self.logger.error(f"重连任务异常: {e}", exc_info=True)
+                
+        self.logger.info("重连循环结束")
     
     async def _process_ws_message(self, message):
         """处理接收到的WebSocket消息"""
