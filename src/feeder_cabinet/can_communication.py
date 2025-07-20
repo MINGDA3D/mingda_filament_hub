@@ -338,26 +338,34 @@ class FeederCabinetCAN:
                         elif command in [self.CMD_RFID_RAW_DATA_NOTIFY, self.CMD_RFID_RAW_DATA_RESPONSE, 
                                        self.CMD_RFID_DATA_PACKET, self.CMD_RFID_DATA_END, self.CMD_RFID_READ_ERROR]:
                             # RFID相关消息
+                            self.logger.debug(f"收到RFID消息: 命令=0x{command:02X}, 数据={[hex(x) for x in msg.data]}")
                             if self.rfid_callback:
                                 rfid_data = {
                                     'command': command,
                                     'data': list(msg.data)
                                 }
                                 asyncio.create_task(self.rfid_callback(rfid_data))
+                            else:
+                                self.logger.warning("收到RFID消息但没有设置回调函数")
                         else:
                             # 检查是否为心跳响应 (根据你的candump，响应格式为: 05 00 FA E2 7E)
                             if len(msg.data) >= 1 and msg.data[0] == 0x05:
                                 self.logger.debug("收到心跳响应")
                                 self.heartbeat_response_received = True
-                            
-                            if self.status_callback:
-                                status_data = {
-                                    'status': msg.data[0],
-                                    'progress': msg.data[1] if len(msg.data) > 1 else 0,
-                                    'error_code': msg.data[2] if len(msg.data) > 2 else 0,
-                                    'raw_data': list(msg.data)
-                                }
-                                asyncio.create_task(self.status_callback(status_data))
+                            # 只有特定的状态命令才调用状态回调
+                            elif command in [self.STATUS_IDLE, self.STATUS_READY, self.STATUS_FEEDING, 
+                                           self.STATUS_COMPLETE, self.STATUS_ERROR]:
+                                if self.status_callback:
+                                    status_data = {
+                                        'status': msg.data[0],
+                                        'progress': msg.data[1] if len(msg.data) > 1 else 0,
+                                        'error_code': msg.data[2] if len(msg.data) > 2 else 0,
+                                        'raw_data': list(msg.data)
+                                    }
+                                    asyncio.create_task(self.status_callback(status_data))
+                            else:
+                                # 未知命令，记录但不处理
+                                self.logger.debug(f"收到未知命令: 0x{command:02X}, 数据={[hex(x) for x in msg.data]}")
             except can.CanError as e:
                 self.logger.error(f"接收消息时发生CAN错误: {e}")
                 self.connected = False

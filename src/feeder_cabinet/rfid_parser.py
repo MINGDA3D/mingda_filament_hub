@@ -98,6 +98,7 @@ class RFIDDataParser:
             return None
             
         cmd = data[0]
+        logger.debug(f"处理RFID消息: 命令=0x{cmd:02X}, 数据={[hex(x) for x in data]}")
         
         if cmd == CMD_RFID_RAW_DATA_NOTIFY:
             return self._handle_notify_start(data)
@@ -258,13 +259,19 @@ class RFIDDataParser:
         }
         
         error_msg = error_map.get(error_code, f"未知错误: {error_code}")
-        logger.error(f"RFID错误: 挤出机{extruder_id}, {error_msg}")
+        logger.error(f"RFID错误: 挤出机{extruder_id}, {error_msg}, 错误码=0x{error_code:02X}, 扩展错误=0x{ext_error:02X}")
+        
+        # 如果是当前会话的错误，清理会话
+        if sequence in self.active_sessions:
+            logger.info(f"清理错误会话: 序列号{sequence}")
+            del self.active_sessions[sequence]
         
         return {
             'type': 'rfid_error',
             'extruder_id': extruder_id,
             'error_code': error_code,
-            'error_msg': error_msg
+            'error_msg': error_msg,
+            'ext_error': ext_error
         }
         
     def _reassemble_data(self, session: RFIDTransferSession) -> Optional[bytes]:
