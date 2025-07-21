@@ -295,7 +295,7 @@ class RFIDDataParser:
     def _parse_opentag_data(self, data: bytes) -> OpenTagFilamentData:
         """解析OpenTag格式数据
         
-        注意：所有多字节数值使用小端格式
+        注意：所有多字节数值使用大端格式
         """
         if len(data) < 89:  # 最小必需字段长度
             raise ValueError(f"数据长度不足: {len(data)} 字节")
@@ -304,7 +304,7 @@ class RFIDDataParser:
         
         # 解析必需字段
         offset = 0
-        filament.tag_version = struct.unpack_from('<H', data, offset)[0]
+        filament.tag_version = struct.unpack_from('>H', data, offset)[0]
         offset += 2
         
         filament.manufacturer = self._extract_string(data, offset, 16)
@@ -316,19 +316,19 @@ class RFIDDataParser:
         filament.color_name = self._extract_string(data, offset, 32)
         offset += 32
         
-        filament.diameter_target = struct.unpack_from('<H', data, offset)[0]
+        filament.diameter_target = struct.unpack_from('>H', data, offset)[0]
         offset += 2
         
-        filament.weight_nominal = struct.unpack_from('<H', data, offset)[0]
+        filament.weight_nominal = struct.unpack_from('>H', data, offset)[0]
         offset += 2
         
-        filament.print_temp = struct.unpack_from('<H', data, offset)[0]
+        filament.print_temp = struct.unpack_from('>H', data, offset)[0]
         offset += 2
         
-        filament.bed_temp = struct.unpack_from('<H', data, offset)[0]
+        filament.bed_temp = struct.unpack_from('>H', data, offset)[0]
         offset += 2
         
-        filament.density = struct.unpack_from('<H', data, offset)[0]
+        filament.density = struct.unpack_from('>H', data, offset)[0]
         offset += 2
         
         # 解析可选字段（如果数据长度足够）
@@ -337,8 +337,8 @@ class RFIDDataParser:
             offset += 16
             
         if len(data) > offset + 8:
-            manufacture_date = struct.unpack_from('<I', data, offset)[0]
-            manufacture_time = struct.unpack_from('<I', data, offset + 4)[0]
+            manufacture_date = struct.unpack_from('>I', data, offset)[0]
+            manufacture_time = struct.unpack_from('>I', data, offset + 4)[0]
             if manufacture_date != 0xFFFFFFFF:
                 # 转换Unix时间戳
                 filament.manufacture_date = datetime.fromtimestamp(manufacture_date)
@@ -367,31 +367,31 @@ class RFIDDataParser:
             offset += 32
             
         if len(data) > offset + 2:
-            filament.empty_spool_weight = struct.unpack_from('<H', data, offset)[0]
+            filament.empty_spool_weight = struct.unpack_from('>H', data, offset)[0]
             if filament.empty_spool_weight == 0xFFFF:
                 filament.empty_spool_weight = None
             offset += 2
             
         if len(data) > offset + 2:
-            filament.filament_weight_measured = struct.unpack_from('<H', data, offset)[0]
+            filament.filament_weight_measured = struct.unpack_from('>H', data, offset)[0]
             if filament.filament_weight_measured == 0xFFFF:
                 filament.filament_weight_measured = None
             offset += 2
             
         if len(data) > offset + 2:
-            filament.filament_length_measured = struct.unpack_from('<H', data, offset)[0]
+            filament.filament_length_measured = struct.unpack_from('>H', data, offset)[0]
             if filament.filament_length_measured == 0xFFFF:
                 filament.filament_length_measured = None
             offset += 2
             
         if len(data) > offset + 2:
-            filament.transmission_distance = struct.unpack_from('<H', data, offset)[0]
+            filament.transmission_distance = struct.unpack_from('>H', data, offset)[0]
             if filament.transmission_distance == 0xFFFF:
                 filament.transmission_distance = None
             offset += 2
             
         if len(data) > offset + 4:
-            filament.color_hex = struct.unpack_from('<I', data, offset)[0]
+            filament.color_hex = struct.unpack_from('>I', data, offset)[0]
             if filament.color_hex == 0xFFFFFFFF:
                 filament.color_hex = None
             offset += 4
