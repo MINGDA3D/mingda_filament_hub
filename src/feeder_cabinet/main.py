@@ -728,7 +728,7 @@ class FeederCabinetApp:
     
     async def _cleanup_rfid_sessions(self):
         """定期清理超时的RFID传输会话"""
-        cleanup_interval = 30  # 每30秒清理一次
+        cleanup_interval = 60  # 每60秒清理一次
         
         while self.state_manager.state != SystemStateEnum.DISCONNECTED:
             try:

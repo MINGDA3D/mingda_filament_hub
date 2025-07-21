@@ -427,7 +427,7 @@ class RFIDDataParser:
         msg[2] = extruder_id
         return bytes(msg)
         
-    def cleanup_expired_sessions(self, timeout: float = 10.0):
+    def cleanup_expired_sessions(self, timeout: float = 30.0):
         """清理超时的传输会话"""
         current_time = datetime.now().timestamp()
         expired = []
@@ -435,9 +435,10 @@ class RFIDDataParser:
         for seq, session in self.active_sessions.items():
             if current_time - session.start_time > timeout:
                 expired.append(seq)
+                logger.warning(f"清理超时的RFID传输会话: 序列号{seq}, "
+                             f"收到 {len(session.received_packets)}/{session.total_packets} 包")
                 
         for seq in expired:
-            logger.warning(f"清理超时的RFID传输会话: 序列号{seq}")
             del self.active_sessions[seq]
 
 
