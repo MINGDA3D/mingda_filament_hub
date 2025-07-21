@@ -53,13 +53,15 @@ filament_runout:
       extruder: 0               # 对应的挤出机索引（0=左，1=右）
     - name: "Filament_Sensor1"  # 传感器名称，需与Klipper配置中的名称一致
       extruder: 1               # 对应的挤出机索引（0=左，1=右）
+klipper:
+  moonraker_url: http://localhost:7125
+  update_interval: 5.0
 
 # 日志配置
 logging:
-  # 日志级别: DEBUG, INFO, WARNING, ERROR
-  level: DEBUG
-  
-  # 日志文件目录
+  backup_count: 5
+  console_output: true
+  level: INFO
   log_dir: /home/mingda/printer_data/logs
   
   # 是否输出到控制台（开发调试用）
@@ -73,8 +75,7 @@ logging:
   
   # 日志文件最大保留天数（自动清理）
   max_age_days: 30
-
-# 安全配置
+  max_file_size: 10485760
 safety:
   # 送料请求超时时间（秒），超过此时间仍未收到响应则报错
   request_timeout: 60.0
@@ -87,8 +88,7 @@ safety:
   
   # 重试间隔（秒）
   recovery_interval: 10.0
-
-# 系统配置
+  request_timeout: 60.0
 system:
   # 守护进程模式，设置为true则在后台运行
   daemon: false
@@ -105,7 +105,24 @@ rfid:
   data_dir: /home/mingda/printer_data/rfid
   
   # RFID传输超时时间（秒）
-  transfer_timeout: 10.0
+  transfer_timeout: 30.0
   
   # 会话清理间隔（秒）
-  cleanup_interval: 30 
+  cleanup_interval: 60
+
+# Spoolman集成配置
+spoolman:
+  # 是否启用Spoolman集成
+  enabled: true
+  
+  # Spoolman服务器URL
+  url: http://localhost:7912
+  
+  # 是否自动同步RFID数据到Spoolman
+  auto_sync_rfid: true
+  
+  # 同步失败时的重试次数
+  retry_count: 3
+  
+  # 重试间隔（秒）
+  retry_interval: 5.0 

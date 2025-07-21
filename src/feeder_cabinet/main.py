@@ -83,6 +83,7 @@ class FeederCabinetApp:
         self.can_comm = None
         self.klipper_monitor = None
         self.rfid_parser = None  # RFID解析器
+        self.spoolman_client = None  # Spoolman客户端
         
         # 运行状态 (由state_manager替代)
         # self.running = False
@@ -624,6 +625,11 @@ class FeederCabinetApp:
             # 保存耗材信息到文件（可选）
             await self._save_filament_info(extruder_id, data)
             
+            # 同步到Spoolman
+            if (self.spoolman_client and 
+                self.config.get('spoolman', {}).get('auto_sync_rfid', True)):
+                await self._sync_to_spoolman(extruder_id, data)
+            
             # 如果配置了自动设置温度，应用耗材温度设置
             if self.config.get('rfid', {}).get('auto_set_temperature', False):
                 await self._apply_filament_temperature(extruder_id, data)
@@ -725,6 +731,52 @@ class FeederCabinetApp:
                 
         except Exception as e:
             self.logger.error(f"请求RFID数据时发生错误: {e}", exc_info=True)
+    
+    async def _sync_to_spoolman(self, extruder_id: int, data: OpenTagFilamentData):
+        """
+        将耗材数据同步到Spoolman
+        
+        Args:
+            extruder_id: 挤出机ID
+            data: 耗材数据
+        """
+        try:
+            self.logger.info(f"开始同步挤出机 {extruder_id} 的耗材数据到Spoolman...")
+            
+            # 获取重试配置
+            retry_count = self.config.get('spoolman', {}).get('retry_count', 3)
+            retry_interval = self.config.get('spoolman', {}).get('retry_interval', 5.0)
+            
+            # 尝试同步
+            for attempt in range(retry_count):
+                try:
+                    async with self.spoolman_client:
+                        result = await self.spoolman_client.sync_rfid_to_spoolman(data)
+                        
+                    self.logger.info(f"成功同步到Spoolman: 卷轴ID={result['spool_id']}, "
+                                   f"耗材={result['filament_name']}, "
+                                   f"序列号={result['serial_number']}")
+                    
+                    # 保存Spoolman ID映射
+                    mapping_file = os.path.join(
+                        self.config.get('rfid', {}).get('data_dir', '/home/mingda/printer_data/rfid'),
+                        f'spoolman_mapping_extruder_{extruder_id}.json'
+                    )
+                    
+                    with open(mapping_file, 'w', encoding='utf-8') as f:
+                        json.dump(result, f, indent=2, ensure_ascii=False)
+                        
+                    return
+                    
+                except Exception as e:
+                    self.logger.warning(f"同步到Spoolman失败 (尝试 {attempt + 1}/{retry_count}): {e}")
+                    if attempt < retry_count - 1:
+                        await asyncio.sleep(retry_interval)
+                        
+            self.logger.error("同步到Spoolman最终失败")
+            
+        except Exception as e:
+            self.logger.error(f"同步到Spoolman时发生错误: {e}", exc_info=True)
     
     async def _cleanup_rfid_sessions(self):
         """定期清理超时的RFID传输会话"""
@@ -1034,9 +1086,23 @@ class FeederCabinetApp:
             self.can_comm.logger = self.log_manager.get_child_logger(self.logger, "can")
             
             # 初始化RFID解析器
-            self.logger.info("初始化RFID解析器")
-            self.rfid_parser = RFIDDataParser()
-            self.rfid_parser.logger = self.log_manager.get_child_logger(self.logger, "rfid")
+            if self.config.get('rfid', {}).get('enabled', True):
+                self.logger.info("初始化RFID解析器")
+                self.rfid_parser = RFIDDataParser()
+                self.rfid_parser.logger = self.log_manager.get_child_logger(self.logger, "rfid")
+                self.logger.info("RFID功能已启用")
+            else:
+                self.rfid_parser = None
+                self.logger.info("RFID功能已禁用")
+                
+            # 初始化Spoolman客户端
+            spoolman_config = self.config.get('spoolman', {})
+            if spoolman_config.get('enabled', False) and spoolman_config.get('url'):
+                self.spoolman_client = SpoolmanClient(spoolman_config['url'])
+                self.logger.info(f"Spoolman集成已启用: {spoolman_config['url']}")
+            else:
+                self.spoolman_client = None
+                self.logger.info("Spoolman集成已禁用")
             
             # 初始化Klipper监控器
             klipper_config = self.config['klipper']
