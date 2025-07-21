@@ -27,6 +27,7 @@ try:
     from feeder_cabinet.log_manager import LogManager
     from feeder_cabinet.state_manager import StateManager, SystemStateEnum
     from feeder_cabinet.rfid_parser import RFIDDataParser, OpenTagFilamentData
+    from feeder_cabinet.spoolman_client import SpoolmanClient
 except ImportError:
     # 如果从包导入失败，尝试相对导入
     from .can_communication import FeederCabinetCAN
@@ -34,6 +35,7 @@ except ImportError:
     from .log_manager import LogManager
     from .state_manager import StateManager, SystemStateEnum
     from .rfid_parser import RFIDDataParser, OpenTagFilamentData
+    from .spoolman_client import SpoolmanClient
 
 # 配置默认参数
 DEFAULT_CONFIG_PATH = "/home/mingda/feeder_cabinet_help/config/config.yaml"
