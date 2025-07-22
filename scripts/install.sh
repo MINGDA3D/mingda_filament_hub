@@ -1,11 +1,11 @@
 #!/bin/bash
-# 送料柜自动续料系统安装脚本
+# MINGDA Filament Hub 安装脚本
 
 set -e
 
 # 显示安装信息
-echo "==== 送料柜自动续料系统安装脚本 ===="
-echo "该脚本将安装送料柜自动续料系统及其依赖项"
+echo "==== MINGDA Filament Hub 安装脚本 ===="
+echo "该脚本将安装 MINGDA Filament Hub 及其依赖项"
 echo
 
 # 检查是否以root权限运行
@@ -20,9 +20,9 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_DIR="/home/mingda/printer_data/config"
 LOG_DIR="/home/mingda/printer_data/logs"
-SERVICE_FILE="/etc/systemd/system/feeder_cabinet.service"
-SERVICE_NAME="feeder_cabinet"
-VENV_DIR="/home/mingda/feeder_cabinet_venv"
+SERVICE_FILE="/etc/systemd/system/mingda_filament_hub.service"
+SERVICE_NAME="mingda_filament_hub"
+VENV_DIR="/home/mingda/mingda_filament_hub_venv"
 HOME="/home/mingda"
 
 echo "项目目录: $PROJECT_DIR"
@@ -100,23 +100,23 @@ else
     echo "您可以稍后手动配置CAN接口"
 fi
 
-function patch_feeder_cabinet_config_update_manager() {
+function patch_mingda_filament_hub_config_update_manager() {
   local moonraker_configs regex
   regex="${HOME//\//\\/}\/([A-Za-z0-9_]+)\/config\/moonraker\.conf"
   moonraker_configs=$(find "${HOME}" -maxdepth 3 -type f -regextype posix-extended -regex "${regex}" | sort)
 
   for conf in ${moonraker_configs}; do
-    if ! grep -Eq "^\[update_manager feeder_cabinet\]\s*$" "${conf}"; then
+    if ! grep -Eq "^\[update_manager mingda_filament_hub\]\s*$" "${conf}"; then
       [[ $(tail -c1 "${conf}" | wc -l) -eq 0 ]] && echo "" >> "${conf}"
 
       /bin/sh -c "cat >> ${conf}" << MOONRAKER_CONF
 
-[update_manager feeder_cabinet]
+[update_manager mingda_filament_hub]
 type: git_repo
-path: ~/feeder_cabinet_help
-origin: https://github.com/MINGDA3D/feeder_cabinet_help.git
+path: ~/mingda_filament_hub
+origin: https://github.com/MINGDA3D/mingda_filament_hub.git
 primary_branch: main
-managed_services: feeder_cabinet
+managed_services: mingda_filament_hub
 install_script: scripts/install.sh
 MOONRAKER_CONF
 
@@ -124,16 +124,16 @@ MOONRAKER_CONF
   done
 }
 
-function patch_feeder_cabinet_service_update() {
+function patch_mingda_filament_hub_service_update() {
   local moonraker_asvc regex
   regex="${HOME//\//\\/}\/([A-Za-z0-9_]+)\/moonraker\.asvc"
   moonraker_asvc=$(find "${HOME}" -maxdepth 3 -type f -regextype posix-extended -regex "${regex}" | sort)
 
   for conf in ${moonraker_asvc}; do
-    if ! grep -Eq "^feeder_cabinet\s*$" "${conf}"; then
+    if ! grep -Eq "^mingda_filament_hub\s*$" "${conf}"; then
 
       /bin/sh -c "cat >> ${conf}" << MOONRAKER_ASVC
-feeder_cabinet
+mingda_filament_hub
 MOONRAKER_ASVC
 
     fi
@@ -141,14 +141,14 @@ MOONRAKER_ASVC
 }
 
 #添加moonraaker配置文件
-patch_feeder_cabinet_config_update_manager
-patch_feeder_cabinet_service_update
+patch_mingda_filament_hub_config_update_manager
+patch_mingda_filament_hub_service_update
 
 # 创建systemd服务文件
 echo "正在创建systemd服务文件..."
 cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=feeder cabinet auto feed system
+Description=MINGDA Filament Hub System
 After=network.target
 After=klipper.service
 After=moonraker.service
@@ -156,7 +156,7 @@ After=moonraker.service
 [Service]
 Type=simple
 User=mingda
-ExecStart=$VENV_DIR/bin/python $PROJECT_DIR/src/feeder_cabinet/main.py -c $CONFIG_DIR/config.yaml
+ExecStart=$VENV_DIR/bin/python $PROJECT_DIR/src/mingda_filament_hub/main.py -c $CONFIG_DIR/config.yaml
 Restart=always
 RestartSec=5s
 
@@ -184,13 +184,13 @@ fi
 echo
 echo "==== 安装完成 ===="
 echo "配置文件: $CONFIG_DIR/config.yaml"
-echo "日志文件: $LOG_DIR/feeder_cabinet.log"
+echo "日志文件: $LOG_DIR/mingda_filament_hub.log"
 echo "虚拟环境: $VENV_DIR"
 echo "查看服务状态: systemctl status $SERVICE_NAME"
 echo "查看服务日志: journalctl -u $SERVICE_NAME -f"
 echo
 echo "请确保将Klipper宏添加到打印机配置中"
-echo "宏定义可在 $PROJECT_DIR/src/feeder_cabinet/gcode_macros.py 中找到"
+echo "宏定义可在 $PROJECT_DIR/src/mingda_filament_hub/gcode_macros.py 中找到"
 echo
 
 exit 0

@@ -1,0 +1,17 @@
+[Unit]
+Description=MINGDA Filament Hub System
+After=network.target moonraker.service
+Wants=moonraker.service
+
+[Service]
+Type=simple
+User=mingda
+WorkingDirectory=/home/mingda/mingda_filament_hub
+ExecStart=/home/mingda/mingda_filament_hub_venv/bin/python /home/mingda/mingda_filament_hub/start_mingda_filament_hub.py -c /home/mingda/printer_data/config/config.yaml
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
