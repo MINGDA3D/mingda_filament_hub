@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is the **Feeder Cabinet Auto-Replenishment System** (送料柜自动续料系统) - a Python-based automation system for 3D printers that automatically manages filament feeding through CAN bus communication with Klipper firmware.
+This is the **MINGDA Filament Hub** (MINGDA料丝中心) - a Python-based automation system for 3D printers that automatically manages filament feeding through CAN bus communication with Klipper firmware.
 
 ## Development Commands
 
@@ -17,9 +17,9 @@ sudo apt install -y python3-pip python3-yaml python3-can
 pip3 install -e .
 
 # Run the application
-feeder_cabinet -c config/config.yaml  # With specific config
-feeder_cabinet -v                      # Verbose mode for debugging
-python -m feeder_cabinet               # As Python module
+mingda_filament_hub -c config/config.yaml  # With specific config
+mingda_filament_hub -v                      # Verbose mode for debugging
+python -m mingda_filament_hub               # As Python module
 ```
 
 ### Service Management
@@ -28,17 +28,17 @@ python -m feeder_cabinet               # As Python module
 sudo scripts/install.sh
 
 # Service control
-sudo systemctl start feeder_cabinet
-sudo systemctl status feeder_cabinet
-sudo systemctl stop feeder_cabinet
-sudo journalctl -u feeder_cabinet -f  # View logs
+sudo systemctl start mingda_filament_hub
+sudo systemctl status mingda_filament_hub
+sudo systemctl stop mingda_filament_hub
+sudo journalctl -u mingda_filament_hub -f  # View logs
 ```
 
 ### CAN Bus Debugging
 ```bash
 # Monitor CAN traffic
 candump can1                           # Monitor all CAN messages
-candump can1 | grep -E "(10A|10B)"   # Monitor feeder cabinet messages
+candump can1 | grep -E "(10A|10B)"   # Monitor filament hub messages
 ```
 
 ## Architecture Overview
@@ -53,7 +53,7 @@ candump can1 | grep -E "(10A|10B)"   # Monitor feeder cabinet messages
 2. **can_communication.py**: CAN bus communication module
    - Handles all CAN protocol implementation
    - Message queuing and thread-safe operations
-   - Protocol: Printer→Cabinet (0x10A), Cabinet→Printer (0x10B)
+   - Protocol: Printer→Hub (0x10A), Hub→Printer (0x10B)
    - Implements handshake, status queries, and command sending
 
 3. **klipper_monitor.py**: Klipper/Moonraker integration
@@ -65,7 +65,7 @@ candump can1 | grep -E "(10A|10B)"   # Monitor feeder cabinet messages
 ### Communication Flow
 
 ```
-Klipper/Moonraker <--WebSocket/REST--> FeederCabinetApp <--CAN Bus--> Feeder Cabinet Controller
+Klipper/Moonraker <--WebSocket/REST--> MINGDAFilamentHubApp <--CAN Bus--> MINGDA Filament Hub Controller
                                               |
                                               v
                                     State Management & Logic
@@ -84,7 +84,7 @@ Klipper/Moonraker <--WebSocket/REST--> FeederCabinetApp <--CAN Bus--> Feeder Cab
 - CAN communication runs at 1Mbps (configurable)
 - Dual extruder support with configurable tube mappings
 - All logging goes to `/home/mingda/printer_data/logs/`
-- Configuration file at `/etc/feeder_cabinet/config.yaml`
+- Configuration file at `/etc/mingda_filament_hub/config.yaml`
 - G-code commands are integrated via Klipper macros
 
 ## Testing & Debugging

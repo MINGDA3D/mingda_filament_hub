@@ -23,6 +23,7 @@ LOG_DIR="/home/mingda/printer_data/logs"
 SERVICE_FILE="/etc/systemd/system/feeder_cabinet.service"
 SERVICE_NAME="feeder_cabinet"
 VENV_DIR="/home/mingda/feeder_cabinet_venv"
+HOME="/home/mingda"
 
 echo "项目目录: $PROJECT_DIR"
 
@@ -98,6 +99,50 @@ else
     [[ ! -f "$RU_NAME" ]] && echo "  - $RU_NAME"
     echo "您可以稍后手动配置CAN接口"
 fi
+
+function patch_feeder_cabinet_config_update_manager() {
+  local moonraker_configs regex
+  regex="${HOME//\//\\/}\/([A-Za-z0-9_]+)\/config\/moonraker\.conf"
+  moonraker_configs=$(find "${HOME}" -maxdepth 3 -type f -regextype posix-extended -regex "${regex}" | sort)
+
+  for conf in ${moonraker_configs}; do
+    if ! grep -Eq "^\[update_manager feeder_cabinet\]\s*$" "${conf}"; then
+      [[ $(tail -c1 "${conf}" | wc -l) -eq 0 ]] && echo "" >> "${conf}"
+
+      /bin/sh -c "cat >> ${conf}" << MOONRAKER_CONF
+
+[update_manager feeder_cabinet]
+type: git_repo
+path: ~/feeder_cabinet_help
+origin: https://github.com/MINGDA3D/feeder_cabinet_help.git
+primary_branch: main
+managed_services: feeder_cabinet
+install_script: scripts/install.sh
+MOONRAKER_CONF
+
+    fi
+  done
+}
+
+function patch_feeder_cabinet_service_update() {
+  local moonraker_asvc regex
+  regex="${HOME//\//\\/}\/([A-Za-z0-9_]+)\/moonraker\.asvc"
+  moonraker_asvc=$(find "${HOME}" -maxdepth 3 -type f -regextype posix-extended -regex "${regex}" | sort)
+
+  for conf in ${moonraker_asvc}; do
+    if ! grep -Eq "^feeder_cabinet\s*$" "${conf}"; then
+
+      /bin/sh -c "cat >> ${conf}" << MOONRAKER_ASVC
+feeder_cabinet
+MOONRAKER_ASVC
+
+    fi
+  done
+}
+
+#添加moonraaker配置文件
+patch_feeder_cabinet_config_update_manager
+patch_feeder_cabinet_service_update
 
 # 创建systemd服务文件
 echo "正在创建systemd服务文件..."

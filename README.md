@@ -1,14 +1,14 @@
-# 送料柜自动续料系统
+# MINGDA Filament Hub
 
 ## 项目简介
 
-送料柜自动续料系统是一个基于Klipper的3D打印机自动续料解决方案，通过CAN总线与送料柜控制器通信，实现自动检测断料、请求送料、恢复打印的完整流程。系统支持多挤出头、多种错误处理，并提供状态监控和G-code命令控制。
+MINGDA Filament Hub 是一个基于Klipper的3D打印机自动续料解决方案，通过CAN总线与料丝中心控制器通信，实现自动检测断料、请求送料、恢复打印的完整流程。系统支持多挤出头、多种错误处理，并提供状态监控和G-code命令控制。
 
 ### 主要功能
 
 - **断料检测与自动续料**：检测到耗材用尽后自动暂停打印，请求送料，等待完成后恢复打印
-- **实时状态监控**：监控打印机和送料柜状态，及时处理状态变化
-- **G-code命令集成**：提供G-code命令控制送料柜的各种操作
+- **实时状态监控**：监控打印机和料丝中心状态，及时处理状态变化
+- **G-code命令集成**：提供G-code命令控制料丝中心的各种操作
 - **错误处理与恢复**：支持多种错误类型处理和自动恢复
 - **丰富的配置选项**：支持自定义CAN接口、刷新频率、日志级别等
 
@@ -28,8 +28,8 @@
 
 ```bash
 # 克隆代码仓库
-git clone https://github.com/your-username/feeder_cabinet.git
-cd feeder_cabinet
+git clone https://github.com/your-username/mingda_filament_hub.git
+cd mingda_filament_hub
 
 # 运行安装脚本（需要root权限）
 sudo scripts/install.sh
@@ -57,10 +57,10 @@ sudo apt install -y python3-pip python3-venv python3-yaml python3-can
 
 ```bash
 # 创建虚拟环境
-python3 -m venv /home/mingda/feeder_cabinet_venv
+python3 -m venv /home/mingda/mingda_filament_hub_venv
 
 # 激活虚拟环境
-source /home/mingda/feeder_cabinet_venv/bin/activate
+source /home/mingda/mingda_filament_hub_venv/bin/activate
 
 # 安装Python包
 pip install --upgrade pip
@@ -121,9 +121,9 @@ nano /home/mingda/printer_data/config/config.yaml
 创建systemd服务文件：
 
 ```bash
-sudo tee /etc/systemd/system/feeder_cabinet.service > /dev/null << EOF
+sudo tee /etc/systemd/system/mingda_filament_hub.service > /dev/null << EOF
 [Unit]
-Description=feeder cabinet auto feed system
+Description=MINGDA Filament Hub System
 After=network.target
 After=klipper.service
 After=moonraker.service
@@ -131,7 +131,7 @@ After=moonraker.service
 [Service]
 Type=simple
 User=mingda
-ExecStart=/home/mingda/feeder_cabinet_venv/bin/python /path/to/feeder_cabinet/src/feeder_cabinet/main.py -c /home/mingda/printer_data/config/config.yaml
+ExecStart=/home/mingda/mingda_filament_hub_venv/bin/python /path/to/mingda_filament_hub/src/mingda_filament_hub/main.py -c /home/mingda/printer_data/config/config.yaml
 Restart=always
 RestartSec=5s
 
@@ -143,8 +143,8 @@ EOF
 sudo systemctl daemon-reload
 
 # 启用并启动服务
-sudo systemctl enable feeder_cabinet
-sudo systemctl start feeder_cabinet
+sudo systemctl enable mingda_filament_hub
+sudo systemctl start mingda_filament_hub
 ```
 
 ### 为Moonraker配置更新管理器
@@ -152,18 +152,18 @@ sudo systemctl start feeder_cabinet
 编辑Moonraker配置文件（通常为`~/printer_data/config/moonraker.conf`），添加：
 
 ```
-[update_manager feeder_cabinet]
+[update_manager mingda_filament_hub]
 type: git_repo
-path: ~/feeder_cabinet  # 实际安装路径
-origin: https://github.com/your-username/feeder_cabinet.git
+path: ~/mingda_filament_hub  # 实际安装路径
+origin: https://github.com/your-username/mingda_filament_hub.git
 primary_branch: main
-managed_services: feeder_cabinet
+managed_services: mingda_filament_hub
 install_script: scripts/install.sh
 ```
 
 ### 添加Klipper宏
 
-编辑你的Klipper配置文件（通常为`printer.cfg`），添加提供的G-code宏。你可以从`src/feeder_cabinet/gcode_macros.py`中复制相关宏定义。
+编辑你的Klipper配置文件（通常为`printer.cfg`），添加提供的G-code宏。你可以从`src/mingda_filament_hub/gcode_macros.py`中复制相关宏定义。
 
 ### 验证部署
 
@@ -171,16 +171,16 @@ install_script: scripts/install.sh
 
 1. **检查服务状态**：
    ```bash
-   sudo systemctl status feeder_cabinet
+   sudo systemctl status mingda_filament_hub
    ```
    
 2. **查看日志**：
    ```bash
    # 查看实时日志
-   sudo journalctl -u feeder_cabinet -f
+   sudo journalctl -u mingda_filament_hub -f
    
    # 查看应用日志
-   tail -f /home/mingda/printer_data/logs/feeder_cabinet.log
+   tail -f /home/mingda/printer_data/logs/mingda_filament_hub.log
    ```
 
 3. **验证CAN接口**：
@@ -195,7 +195,7 @@ install_script: scripts/install.sh
 4. **测试通信**：
    在Klipper控制台中运行：
    ```
-   QUERY_FEEDER_CABINET
+   QUERY_FILAMENT_HUB
    ```
 
 ## 使用方法
@@ -206,49 +206,49 @@ install_script: scripts/install.sh
 
 ```bash
 # 启动服务
-sudo systemctl start feeder_cabinet
+sudo systemctl start mingda_filament_hub
 
 # 停止服务
-sudo systemctl stop feeder_cabinet
+sudo systemctl stop mingda_filament_hub
 
 # 查看日志
-sudo journalctl -u feeder_cabinet -f
+sudo journalctl -u mingda_filament_hub -f
 
 # 运行带有特定配置的实例
-feeder_cabinet -c /path/to/config.yaml
+mingda_filament_hub -c /path/to/config.yaml
 
 # 调试模式
-feeder_cabinet -v
+mingda_filament_hub -v
 ```
 
 ### G-code命令
 
 在打印过程中，你可以使用以下G-code命令：
 
-- `START_FEEDER_CABINET EXTRUDER=0`：请求送料柜给指定挤出机送料
-- `QUERY_FEEDER_CABINET`：查询送料柜状态
-- `CANCEL_FEEDER_CABINET EXTRUDER=0`：取消正在进行的送料操作
+- `START_FILAMENT_HUB EXTRUDER=0`：请求料丝中心给指定挤出机送料
+- `QUERY_FILAMENT_HUB`：查询料丝中心状态
+- `CANCEL_FILAMENT_HUB EXTRUDER=0`：取消正在进行的送料操作
 - `ENABLE_FILAMENT_RUNOUT`：启用断料检测
 - `DISABLE_FILAMENT_RUNOUT`：禁用断料检测
 
 例如：
 ```
-G-code控制台> START_FEEDER_CABINET EXTRUDER=0 FORCE=1
+G-code控制台> START_FILAMENT_HUB EXTRUDER=0 FORCE=1
 ```
 
 ## 通信协议
 
-本节定义了送料柜与打印机（通过`feeder_cabinet`服务）之间的CAN通信协议。
+本节定义了料丝中心与打印机（通过`mingda_filament_hub`服务）之间的CAN通信协议。
 
 
 
 **实现说明:**
 
-1.  送料柜控制器发送CAN ID为 `0x10B` 的消息来发起查询。
-2.  运行在打印机主机上的 `feeder_cabinet` 服务通过 `can_communication.py` 模块监听此ID。
+1.  料丝中心控制器发送CAN ID为 `0x10B` 的消息来发起查询。
+2.  运行在打印机主机上的 `mingda_filament_hub` 服务通过 `can_communication.py` 模块监听此ID。
 3.  收到查询后，服务通过 `klipper_monitor.py` 模块向Moonraker API请求断料传感器的状态。
 4.  服务根据Klipper返回的状态构建响应数据包。
-5.  服务通过 `can_communication.py` 模块发送ID为 `0x10A` 的响应消息给送料柜。
+5.  服务通过 `can_communication.py` 模块发送ID为 `0x10A` 的响应消息给料丝中心。
 
 ## 配置选项
 
@@ -273,7 +273,7 @@ filament_runout:
 # 日志配置
 logging:
   level: INFO            # 日志级别 (DEBUG, INFO, WARNING, ERROR)
-  log_dir: /var/log/feeder_cabinet  # 日志文件目录
+  log_dir: /var/log/mingda_filament_hub  # 日志文件目录
 ```
 
 ## 故障排除
@@ -288,7 +288,7 @@ logging:
 2. **服务无法启动**
    - 检查Python虚拟环境是否正确创建
    - 验证配置文件路径是否正确
-   - 查看服务日志：`sudo journalctl -u feeder_cabinet -n 50`
+   - 查看服务日志：`sudo journalctl -u mingda_filament_hub -n 50`
 
 3. **Python模块导入错误**
    - 确保虚拟环境中安装了所有依赖
@@ -304,9 +304,9 @@ logging:
    - 查看日志确认错误信息
 
 2. **握手失败**
-   - 确认送料柜控制器已启动
+   - 确认料丝中心控制器已启动
    - 检查CAN总线速率是否匹配（默认1Mbps）
-   - 检查送料柜固件是否支持该握手协议
+   - 检查料丝中心固件是否支持该握手协议
    - 使用`candump`监控CAN消息
 
 3. **自动续料不工作**
@@ -324,8 +324,8 @@ logging:
 
 主要日志文件位于：
 
-- 应用日志：`/home/mingda/printer_data/logs/feeder_cabinet.log`
-- Systemd日志：`journalctl -u feeder_cabinet`
+- 应用日志：`/home/mingda/printer_data/logs/mingda_filament_hub.log`
+- Systemd日志：`journalctl -u mingda_filament_hub`
 - CAN重命名日志：`/home/mingda/tmp/can_rename.log`
 
 ## 开发者信息
@@ -342,7 +342,7 @@ logging:
 使用verbose模式运行以获取更多调试信息：
 
 ```bash
-feeder_cabinet -v
+mingda_filament_hub -v
 ```
 
 ### 贡献指南
@@ -360,5 +360,5 @@ feeder_cabinet -v
 ## 联系方式
 
 如有问题或建议，请通过以下方式联系：
-- GitHub Issues: [创建issue](https://github.com/your-username/feeder_cabinet/issues)
+- GitHub Issues: [创建issue](https://github.com/your-username/mingda_filament_hub/issues)
 - 邮箱: your-email@example.com 
