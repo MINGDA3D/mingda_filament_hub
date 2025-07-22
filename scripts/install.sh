@@ -149,16 +149,18 @@ echo "正在创建systemd服务文件..."
 cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=MINGDA Filament Hub System
-After=network.target
-After=klipper.service
-After=moonraker.service
+After=network.target moonraker.service
+Wants=moonraker.service
 
 [Service]
 Type=simple
 User=mingda
-ExecStart=$VENV_DIR/bin/python $PROJECT_DIR/src/mingda_filament_hub/main.py -c $CONFIG_DIR/config.yaml
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$VENV_DIR/bin/python $PROJECT_DIR/src/feeder_cabinet/main.py -c $CONFIG_DIR/config.yaml
 Restart=always
-RestartSec=5s
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
