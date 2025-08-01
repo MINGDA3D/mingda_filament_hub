@@ -567,6 +567,99 @@ class FeederCabinetApp:
         except Exception as e:
             self.logger.error(f"处理RFID消息时发生错误: {e}", exc_info=True)
     
+    async def _handle_filament_runout(self, data: dict):
+        """
+        处理断料通知
+        
+        Args:
+            data: 包含断料信息的字典
+        """
+        try:
+            filament_id = data.get('filament_id')
+            extruder_id = data.get('extruder_id')
+            status = data.get('status')
+            
+            self.logger.info(f"处理断料通知: 耗材通道={filament_id}, 挤出机={extruder_id}, 状态={status}")
+            
+            # 检查是否是当前活跃的挤出机
+            if self.klipper_monitor and self.klipper_monitor.ws_connected:
+                printer_status = self.klipper_monitor.get_printer_status()
+                
+                if printer_status:
+                    # 获取当前活跃的挤出机
+                    active_extruder = printer_status.get('active_extruder', 0)
+                    printer_state = printer_status.get('printer_state', 'unknown')
+                    
+                    self.logger.info(f"当前活跃挤出机: {active_extruder}, 打印机状态: {printer_state}")
+                    
+                    # 只有在打印中且是当前活跃挤出机的断料时才处理
+                    if printer_state == 'printing' and extruder_id == active_extruder:
+                        self.logger.info("检测到当前活跃挤出机在打印中断料，开始处理...")
+                        
+                        # 暂停打印
+                        self.logger.info("暂停打印...")
+                        if await self.klipper_monitor.pause_print():
+                            self.logger.info("打印已暂停")
+                            
+                            # 等待暂停完成
+                            await asyncio.sleep(2.0)
+                            
+                            # 设置相对挤出模式
+                            await self.klipper_monitor.execute_gcode("M83")  # 相对挤出模式
+                            
+                            # 以2mm/s的速度挤出300mm
+                            extrude_length = 300  # mm
+                            extrude_speed = 2 * 60  # 2mm/s = 120mm/min
+                            
+                            self.logger.info(f"开始挤出 {extrude_length}mm，速度 {extrude_speed/60:.1f}mm/s...")
+                            
+                            # 发送挤出命令
+                            gcode = f"G1 E{extrude_length} F{extrude_speed}"
+                            if await self.klipper_monitor.execute_gcode(gcode):
+                                # 计算挤出时间
+                                extrude_time = extrude_length / (extrude_speed / 60)
+                                self.logger.info(f"挤出命令已发送，预计耗时 {extrude_time:.1f}秒")
+                                
+                                # 等待挤出完成
+                                await asyncio.sleep(extrude_time + 2.0)  # 额外2秒缓冲
+                                
+                                # 重置挤出机位置
+                                await self.klipper_monitor.execute_gcode("G92 E0")
+                                
+                                # 设置回绝对挤出模式
+                                await self.klipper_monitor.execute_gcode("M82")
+                                
+                                self.logger.info("挤出完成，恢复打印...")
+                                
+                                # 恢复打印
+                                if await self.klipper_monitor.resume_print():
+                                    self.logger.info("打印已恢复")
+                                else:
+                                    self.logger.error("恢复打印失败")
+                            else:
+                                self.logger.error("发送挤出命令失败")
+                                # 尝试恢复打印
+                                await self.klipper_monitor.resume_print()
+                        else:
+                            self.logger.error("暂停打印失败")
+                    else:
+                        self.logger.info(f"忽略断料通知: 不是当前活跃挤出机或不在打印中 "
+                                       f"(活跃挤出机={active_extruder}, 断料挤出机={extruder_id}, "
+                                       f"打印状态={printer_state})")
+                else:
+                    self.logger.warning("无法获取打印机状态")
+            else:
+                self.logger.warning("Klipper未连接，无法处理断料")
+                
+        except Exception as e:
+            self.logger.error(f"处理断料通知时发生错误: {e}", exc_info=True)
+            # 如果处理失败，尝试恢复打印
+            try:
+                if self.klipper_monitor and self.klipper_monitor.ws_connected:
+                    await self.klipper_monitor.resume_print()
+            except:
+                pass
+    
     async def _process_filament_data(self, extruder_id: int, filament_id: int, 
                                   data: OpenTagFilamentData):
         """
@@ -1083,6 +1176,7 @@ class FeederCabinetApp:
             self.can_comm.set_mapping_set_callback(self._handle_feeder_mapping_set)
             self.can_comm.set_reconnect_callback(self._handle_can_reconnect)
             self.can_comm.set_rfid_callback(self._handle_rfid_message)  # 设置RFID回调
+            self.can_comm.set_filament_out_callback(self._handle_filament_runout)  # 设置断料回调
             
             # 为CAN通信模块设置logger
             self.can_comm.logger = self.log_manager.get_child_logger(self.logger, "can")

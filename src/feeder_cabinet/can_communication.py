@@ -61,6 +61,7 @@ class FeederCabinetCAN:
     CMD_RFID_DATA_PACKET       = 0x17       # RFID数据包
     CMD_RFID_DATA_END          = 0x18       # RFID数据传输结束
     CMD_RFID_READ_ERROR        = 0x19       # RFID读取错误
+    CMD_FILAMENT_OUT_NOTIFY    = 0x1A       # 断料通知
     
     def __init__(self, interface: str = 'can0', bitrate: int = 1000000):
         """
@@ -94,6 +95,7 @@ class FeederCabinetCAN:
         self.mapping_set_callback: Optional[Callable[[Dict], Coroutine]] = None
         self.reconnect_callback: Optional[Callable[[], Coroutine]] = None  # 重连成功回调
         self.rfid_callback: Optional[Callable[[Dict], Coroutine]] = None  # RFID数据回调
+        self.filament_out_callback: Optional[Callable[[Dict], Coroutine]] = None  # 断料通知回调
         
         # 异步任务和锁
         self.rx_task: Optional[asyncio.Task] = None
@@ -347,6 +349,28 @@ class FeederCabinetCAN:
                                 asyncio.create_task(self.rfid_callback(rfid_data))
                             else:
                                 self.logger.warning("收到RFID消息但没有设置回调函数")
+                        elif command == self.CMD_FILAMENT_OUT_NOTIFY:
+                            # 断料通知消息
+                            if len(msg.data) >= 5:
+                                is_valid = msg.data[1]
+                                filament_id = msg.data[2]
+                                extruder_id = msg.data[3]
+                                status = msg.data[4]
+                                
+                                self.logger.info(f"收到断料通知: 有效={is_valid}, 耗材通道={filament_id}, 挤出机={extruder_id}, 状态={status}")
+                                
+                                if is_valid == 0x01 and status == 0x01 and filament_id < 6 and extruder_id < 2 and self.filament_out_callback:
+                                    filament_out_data = {
+                                        'is_valid': is_valid,
+                                        'filament_id': filament_id,
+                                        'extruder_id': extruder_id,
+                                        'status': status
+                                    }
+                                    asyncio.create_task(self.filament_out_callback(filament_out_data))
+                                else:
+                                    self.logger.debug("断料通知无效或没有设置回调函数")
+                            else:
+                                self.logger.warning(f"断料通知数据长度不足: {len(msg.data)} < 5")
                         else:
                             # 检查是否为心跳响应 (根据你的candump，响应格式为: 05 00 FA E2 7E)
                             if len(msg.data) >= 1 and msg.data[0] == 0x05:
@@ -517,6 +541,15 @@ class FeederCabinetCAN:
             callback: RFID数据回调函数，接收包含命令和数据的字典
         """
         self.rfid_callback = callback
+    
+    def set_filament_out_callback(self, callback: Callable[[Dict], Coroutine]):
+        """
+        设置断料通知回调函数
+        
+        Args:
+            callback: 断料通知回调函数，接收包含断料信息的字典
+        """
+        self.filament_out_callback = callback
     
     async def _send_with_retry(self, msg: 'can.Message', retries: int = 3, retry_delay: float = 0.05) -> bool:
         """
