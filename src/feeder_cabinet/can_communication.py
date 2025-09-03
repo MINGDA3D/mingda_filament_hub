@@ -629,12 +629,15 @@ class FeederCabinetCAN:
             self.logger.error(f"构建或发送消息时发生未知错误: {str(e)}")
             return False
     
-    async def request_feed(self, tube_id: int = 0) -> bool:
+    async def request_feed(self, tube_id: int = 0, length: int = None, speed: int = None, duration: int = None) -> bool:
         """
         请求送料
         
         Args:
-            tube_id: 料管编号
+            tube_id: 料管编号 (0-255)
+            length: 送料长度(mm)，0-255，可选
+            speed: 送料速度等级(1-10对应100-1000mm/min)，可选
+            duration: 送料时间(分钟)，0-255，可选
             
         Returns:
             bool: 请求是否成功
@@ -644,8 +647,33 @@ class FeederCabinetCAN:
             return False
             
         try:
-            # 格式: [CMD_ID, IS_VALID, TUBE_ID, ...]
-            data = [self.CMD_REQUEST_FEED, 0x00, tube_id, 0x00, 0x00, 0x00, 0x00, 0x00]
+            # 如果提供了时间参数，计算实际长度
+            if duration is not None and speed is not None:
+                # 速度等级转换为实际速度: 1->100mm/min, 10->1000mm/min
+                actual_speed = speed * 100 if speed else 300
+                # duration是分钟，actual_speed是mm/min，直接相乘得到长度
+                calculated_length = int(actual_speed * duration)
+                calculated_length = min(calculated_length, 255)  # 限制在字节范围内
+                self.logger.debug(f"根据时间{duration}分钟和速度等级{speed}(={actual_speed}mm/min)计算长度: {calculated_length}mm")
+                if length is None:
+                    length = calculated_length
+            
+            # 参数处理，每个参数一个字节
+            length_byte = min(max(length if length is not None else 50, 0), 255)    # 长度：0-255mm
+            speed_byte = min(max(speed if speed is not None else 3, 1), 10)         # 速度等级：1-10
+            duration_byte = min(max(duration if duration is not None else 0, 0), 255)  # 时间：0-255分钟
+            
+            # 格式: [CMD_ID, TUBE_ID, LENGTH, SPEED_LEVEL, DURATION, 保留, 保留, 保留]
+            data = [
+                self.CMD_REQUEST_FEED,
+                tube_id & 0xFF,     # 料管ID
+                length_byte,        # 长度(mm)
+                speed_byte,         # 速度等级(1-10)
+                duration_byte,      # 时间(分钟)
+                0x00,              # 保留
+                0x00,              # 保留
+                0x00               # 保留
+            ]
             
             msg = can.Message(
                 arbitration_id=self.SEND_ID,
@@ -654,7 +682,9 @@ class FeederCabinetCAN:
             )
 
             if await self._send_with_retry(msg):
-                self.logger.info(f"已发送补料请求: 料管ID={tube_id}, 数据={[hex(x) for x in data]}")
+                actual_speed = speed_byte * 100
+                self.logger.info(f"已发送补料请求: 料管ID={tube_id}, 长度={length_byte}mm, 速度等级={speed_byte}({actual_speed}mm/min), 时间={duration_byte}分钟")
+                self.logger.debug(f"CAN数据={[hex(x) for x in data]}")
                 return True
             else:
                 return False

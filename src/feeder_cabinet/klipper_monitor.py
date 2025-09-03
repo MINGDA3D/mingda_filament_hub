@@ -86,6 +86,7 @@ class KlipperMonitor:
         # 回调函数
         self.status_callbacks: List[Callable[[Dict], Coroutine]] = []
         self.disconnect_callback: Optional[Callable[[], Coroutine]] = None
+        self.macro_callbacks: List[Callable[[str, Dict], Coroutine]] = []  # 宏执行回调
         
         # 重连任务
         self.reconnect_task: Optional[asyncio.Task] = None
@@ -266,6 +267,13 @@ class KlipperMonitor:
                 self.logger.debug(f"收到状态更新通知，包含的对象: {list(status_data.keys())}")
                 await self._handle_status_update(status_data)
             
+            elif 'method' in data and data['method'] == 'notify_gcode_response':
+                # 处理gcode响应（包括M118消息）
+                if 'params' in data and len(data['params']) > 0:
+                    response = data['params'][0]
+                    self.logger.info(f"收到gcode响应: {response}")
+                    await self._process_gcode_response(response)
+            
             elif 'result' in data and 'status' in data['result']:
                 status_data = data['result']['status']
                 self.logger.debug(f"收到订阅响应，包含的对象: {list(status_data.keys())}")
@@ -276,6 +284,48 @@ class KlipperMonitor:
         except Exception as e:
             self.logger.error(f"处理WebSocket消息时发生内部错误: {e}", exc_info=True)
 
+    async def _process_gcode_response(self, response: str):
+        """处理gcode响应消息，特别是M118输出"""
+        # M118消息格式可能是：
+        # "echo: Loading filament for 30.0 minutes..."
+        # "// Loading filament for 30.0 minutes..."
+        
+        # 移除可能的前缀
+        message = response
+        if response.startswith("// "):
+            message = response[3:].strip()
+        elif response.startswith("echo: "):
+            message = response[6:].strip()
+        
+        # 检查是否是加载耗材命令
+        if "Loading filament for" in message:
+            self.logger.info(f"检测到LOAD_FILAMENT宏执行: {message}")
+            # 解析参数
+            macro_info = {'name': 'LOAD_FILAMENT'}
+            
+            # 使用正则表达式解析duration
+            import re
+            match = re.search(r'Loading filament for ([\d.]+) minutes', message)
+            if match:
+                try:
+                    macro_info['duration'] = float(match.group(1))
+                    self.logger.info(f"解析到DURATION参数: {macro_info['duration']} 分钟")
+                except ValueError as e:
+                    self.logger.error(f"解析DURATION参数失败: {e}")
+                    macro_info['duration'] = 1.0  # 默认1分钟
+            else:
+                macro_info['duration'] = 1.0  # 默认1分钟
+            
+            # 触发宏执行回调
+            for callback in self.macro_callbacks:
+                asyncio.create_task(callback('LOAD_FILAMENT', macro_info))
+                
+        elif "Stopping filament load" in message:
+            self.logger.info(f"检测到STOP_LOAD_FILAMENT宏执行: {message}")
+            # 触发停止送料回调
+            for callback in self.macro_callbacks:
+                asyncio.create_task(callback('STOP_LOAD_FILAMENT', {}))
+    
     async def _handle_status_update(self, status):
         """处理状态更新数据, 并通过回调上报"""
         # 调试日志：记录收到的所有状态更新
@@ -559,6 +609,17 @@ class KlipperMonitor:
     def register_disconnect_callback(self, callback: Callable[[], Coroutine]):
         """注册断开连接回调"""
         self.disconnect_callback = callback
+    
+    def register_macro_callback(self, callback: Callable[[str, Dict], Coroutine]):
+        """注册宏执行回调"""
+        if callback not in self.macro_callbacks:
+            self.macro_callbacks.append(callback)
+            self.logger.info("已注册宏执行回调")
+    
+    def unregister_macro_callback(self, callback: Callable):
+        """注销宏执行回调"""
+        if callback in self.macro_callbacks:
+            self.macro_callbacks.remove(callback)
             
     async def execute_gcode(self, command: str) -> bool:
         return await self._send_gcode(command)

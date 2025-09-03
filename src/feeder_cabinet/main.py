@@ -781,6 +781,67 @@ class FeederCabinetApp:
         except Exception as e:
             self.logger.error(f"请求RFID数据时发生错误: {e}", exc_info=True)
     
+    async def _handle_macro_execution(self, macro_name: str, macro_info: Dict):
+        """
+        处理Klipper宏命令执行事件
+        
+        Args:
+            macro_name: 宏名称
+            macro_info: 宏参数信息
+        """
+        try:
+            self.logger.info(f"检测到宏命令执行: {macro_name}, 参数: {macro_info}")
+            
+            if macro_name == 'LOAD_FILAMENT':
+                # 获取DURATION参数（分钟）
+                duration = macro_info.get('duration', 1.0)  # 默认1分钟
+                
+                # 获取当前活跃的挤出机
+                active_extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
+                
+                # 从挤出机映射获取对应的料管号
+                tube_index = self.config.get('extruders', {}).get('mapping', {}).get(str(active_extruder), active_extruder)
+                
+                self.logger.info(f"触发送料: 挤出机{active_extruder} -> 料管{tube_index}, 持续时间: {duration}分钟")
+                
+                # 发送送料命令到送料柜
+                if self.can_comm and self.can_comm.connected:
+                    # 使用duration参数（分钟）
+                    success = await self.can_comm.request_feed(
+                        tube_id=tube_index,
+                        duration=int(duration)  # 转换为整数分钟
+                    )
+                    
+                    if success:
+                        self.logger.info(f"成功发送送料命令: 料管{tube_index}, 持续{duration}分钟")
+                    else:
+                        self.logger.error(f"发送送料命令失败")
+                else:
+                    self.logger.warning("CAN未连接，无法发送送料命令")
+                    
+            elif macro_name == 'STOP_LOAD_FILAMENT':
+                # 获取当前活跃的挤出机
+                active_extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
+                
+                # 从挤出机映射获取对应的料管号
+                tube_index = self.config.get('extruders', {}).get('mapping', {}).get(str(active_extruder), active_extruder)
+                
+                self.logger.info(f"触发停止送料: 挤出机{active_extruder} -> 料管{tube_index}")
+                
+                # 发送停止送料命令
+                if self.can_comm and self.can_comm.connected:
+                    success = await self.can_comm.stop_feed(tube_id=tube_index)
+                    
+                    if success:
+                        self.logger.info(f"成功发送停止送料命令: 料管{tube_index}")
+                    else:
+                        self.logger.error(f"发送停止送料命令失败")
+                else:
+                    self.logger.warning("CAN未连接，无法发送停止送料命令")
+                    
+        except Exception as e:
+            self.logger.error(f"处理宏执行事件时发生错误: {e}", exc_info=True)
+    
     async def _sync_to_spoolman(self, extruder_id: int, data: OpenTagFilamentData):
         """
         将耗材数据同步到Spoolman
@@ -1360,6 +1421,10 @@ class FeederCabinetApp:
             else:
                 self.logger.error("在指定时间内未能连接到Klipper，程序将继续运行，但无法与打印机交互，请检查Klipper/Moonraker服务状态。")
 
+            # 注册宏执行回调
+            self.klipper_monitor.register_macro_callback(self._handle_macro_execution)
+            self.logger.info("已注册宏执行回调")
+            
             # 启动Klipper监控
             update_interval = self.config['klipper']['update_interval']
             self.klipper_monitor.start_monitoring(interval=update_interval)
