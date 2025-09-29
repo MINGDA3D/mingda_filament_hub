@@ -351,26 +351,40 @@ class FeederCabinetCAN:
                                 self.logger.warning("收到RFID消息但没有设置回调函数")
                         elif command == self.CMD_FILAMENT_OUT_NOTIFY:
                             # 断料通知消息
-                            if len(msg.data) >= 5:
+                            if len(msg.data) >= 6:
                                 is_valid = msg.data[1]
                                 filament_id = msg.data[2]
                                 extruder_id = msg.data[3]
                                 status = msg.data[4]
+                                material_type = msg.data[5] if len(msg.data) >= 6 else 0x00
                                 
-                                self.logger.info(f"收到断料通知: 有效={is_valid}, 耗材通道={filament_id}, 挤出机={extruder_id}, 状态={status}")
+                                # 解析耗材类型
+                                material_types = {
+                                    0x00: "未知",      # Unknown
+                                    0x01: "PLA",       # PLA
+                                    0x02: "PETG",      # PETG  
+                                    0x03: "ABS",       # ABS
+                                    0x04: "ASA",       # ASA
+                                    0xFF: "其他"       # Other
+                                }
+                                material_name = material_types.get(material_type, "未定义")
+                                
+                                self.logger.info(f"收到断料通知: 有效={is_valid}, 耗材通道={filament_id}, 挤出机={extruder_id}, 状态={status}, 耗材类型={material_name}(0x{material_type:02X})")
                                 
                                 if is_valid == 0x01 and status == 0x01 and filament_id < 6 and extruder_id < 2 and self.filament_out_callback:
                                     filament_out_data = {
                                         'is_valid': is_valid,
                                         'filament_id': filament_id,
                                         'extruder_id': extruder_id,
-                                        'status': status
+                                        'status': status,
+                                        'material_type': material_type,
+                                        'material_name': material_name
                                     }
                                     asyncio.create_task(self.filament_out_callback(filament_out_data))
                                 else:
                                     self.logger.debug("断料通知无效或没有设置回调函数")
                             else:
-                                self.logger.warning(f"断料通知数据长度不足: {len(msg.data)} < 5")
+                                self.logger.warning(f"断料通知数据长度不足: {len(msg.data)} < 6")
                         else:
                             # 检查是否为心跳响应 (根据你的candump，响应格式为: 05 00 FA E2 7E)
                             if len(msg.data) >= 1 and msg.data[0] == 0x05:

@@ -578,8 +578,24 @@ class FeederCabinetApp:
             filament_id = data.get('filament_id')
             extruder_id = data.get('extruder_id')
             status = data.get('status')
+            material_type = data.get('material_type', 0x00)
+            material_name = data.get('material_name', '未知')
             
-            self.logger.info(f"处理断料通知: 耗材通道={filament_id}, 挤出机={extruder_id}, 状态={status}")
+            self.logger.info(f"处理断料通知: 耗材通道={filament_id}, 挤出机={extruder_id}, 状态={status}, 耗材类型={material_name}")
+            
+            # # 检查是否为未知或其他耗材类型，如果是则暂停打印
+            # if material_type in [0x00, 0xFF]:  # 0x00=未知, 0xFF=其他
+            #     self.logger.warning(f"检测到{material_name}耗材类型，暂停打印以确保安全")
+                
+            #     if self.klipper_monitor and self.klipper_monitor.ws_connected:
+            #         printer_status = self.klipper_monitor.get_printer_status()
+            #         if printer_status and printer_status.get('printer_state') == 'printing':
+            #             self.logger.info("因耗材类型未知，暂停打印...")
+            #             if await self.klipper_monitor.pause_print():
+            #                 self.logger.info("因耗材类型问题已暂停打印，请检查耗材")
+            #             else:
+            #                 self.logger.error("暂停打印失败")
+            #     return  # 对于未知/其他耗材类型，暂停后直接返回，不执行后续的补料流程
             
             # 检查是否是当前活跃的挤出机
             if self.klipper_monitor and self.klipper_monitor.ws_connected:
@@ -593,7 +609,7 @@ class FeederCabinetApp:
                     self.logger.info(f"当前活跃挤出机: {active_extruder}, 打印机状态: {printer_state}")
                     
                     # 只有在打印中且是当前活跃挤出机的断料时才处理
-                    if printer_state == 'printing' and extruder_id == active_extruder:
+                    if printer_state == 'printing' and extruder_id == active_extruder and material_type in [0x00, 0xFF]:
                         self.logger.info("检测到当前活跃挤出机在打印中断料，开始处理...")
                         
                         # 暂停打印
@@ -601,45 +617,45 @@ class FeederCabinetApp:
                         if await self.klipper_monitor.pause_print():
                             self.logger.info("打印已暂停")
                             
-                            # 等待暂停完成
-                            await asyncio.sleep(2.0)
+                        #     # 等待暂停完成
+                        #     await asyncio.sleep(2.0)
                             
-                            # 设置相对挤出模式
-                            await self.klipper_monitor.execute_gcode("M83")  # 相对挤出模式
+                        #     # 设置相对挤出模式
+                        #     await self.klipper_monitor.execute_gcode("M83")  # 相对挤出模式
                             
-                            # 以2mm/s的速度挤出300mm
-                            extrude_length = 300  # mm
-                            extrude_speed = 2 * 60  # 2mm/s = 120mm/min
+                        #     # 以2mm/s的速度挤出300mm
+                        #     extrude_length = 300  # mm
+                        #     extrude_speed = 2 * 60  # 2mm/s = 120mm/min
                             
-                            self.logger.info(f"开始挤出 {extrude_length}mm，速度 {extrude_speed/60:.1f}mm/s...")
+                        #     self.logger.info(f"开始挤出 {extrude_length}mm，速度 {extrude_speed/60:.1f}mm/s...")
                             
-                            # 发送挤出命令
-                            gcode = f"G1 E{extrude_length} F{extrude_speed}"
-                            if await self.klipper_monitor.execute_gcode(gcode):
-                                # 计算挤出时间
-                                extrude_time = extrude_length / (extrude_speed / 60)
-                                self.logger.info(f"挤出命令已发送，预计耗时 {extrude_time:.1f}秒")
+                        #     # 发送挤出命令
+                        #     gcode = f"G1 E{extrude_length} F{extrude_speed}"
+                        #     if await self.klipper_monitor.execute_gcode(gcode):
+                        #         # 计算挤出时间
+                        #         extrude_time = extrude_length / (extrude_speed / 60)
+                        #         self.logger.info(f"挤出命令已发送，预计耗时 {extrude_time:.1f}秒")
                                 
-                                # 等待挤出完成
-                                await asyncio.sleep(extrude_time + 2.0)  # 额外2秒缓冲
+                        #         # 等待挤出完成
+                        #         await asyncio.sleep(extrude_time + 2.0)  # 额外2秒缓冲
                                 
-                                # 重置挤出机位置
-                                await self.klipper_monitor.execute_gcode("G92 E0")
+                        #         # 重置挤出机位置
+                        #         await self.klipper_monitor.execute_gcode("G92 E0")
                                 
-                                # 设置回绝对挤出模式
-                                await self.klipper_monitor.execute_gcode("M82")
+                        #         # 设置回绝对挤出模式
+                        #         await self.klipper_monitor.execute_gcode("M82")
                                 
-                                self.logger.info("挤出完成，恢复打印...")
+                        #         self.logger.info("挤出完成，恢复打印...")
                                 
-                                # 恢复打印
-                                if await self.klipper_monitor.resume_print():
-                                    self.logger.info("打印已恢复")
-                                else:
-                                    self.logger.error("恢复打印失败")
-                            else:
-                                self.logger.error("发送挤出命令失败")
-                                # 尝试恢复打印
-                                await self.klipper_monitor.resume_print()
+                        #         # 恢复打印
+                        #         if await self.klipper_monitor.resume_print():
+                        #             self.logger.info("打印已恢复")
+                        #         else:
+                        #             self.logger.error("恢复打印失败")
+                        #     else:
+                        #         self.logger.error("发送挤出命令失败")
+                        #         # 尝试恢复打印
+                        #         await self.klipper_monitor.resume_print()
                         else:
                             self.logger.error("暂停打印失败")
                     else:
