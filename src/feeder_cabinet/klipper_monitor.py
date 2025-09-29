@@ -298,23 +298,54 @@ class KlipperMonitor:
             message = response[6:].strip()
         
         # 检查是否是加载耗材命令
-        if "Loading filament for" in message:
+        if "Loading filament" in message:
             self.logger.info(f"检测到LOAD_FILAMENT宏执行: {message}")
             # 解析参数
             macro_info = {'name': 'LOAD_FILAMENT'}
             
-            # 使用正则表达式解析duration
+            # 使用正则表达式解析所有参数
             import re
-            match = re.search(r'Loading filament for ([\d.]+) minutes', message)
-            if match:
+            
+            # 解析 Length
+            length_match = re.search(r'Length:\s*([\d.]+)mm', message)
+            if length_match:
                 try:
-                    macro_info['duration'] = float(match.group(1))
+                    macro_info['length'] = float(length_match.group(1))
+                    self.logger.info(f"解析到LENGTH参数: {macro_info['length']}mm")
+                except ValueError:
+                    macro_info['length'] = 50  # 默认50mm
+            else:
+                macro_info['length'] = 50
+            
+            # 解析 Speed
+            speed_match = re.search(r'Speed:\s*([\d.]+)mm/min', message)
+            if speed_match:
+                try:
+                    macro_info['speed'] = float(speed_match.group(1))
+                    self.logger.info(f"解析到SPEED参数: {macro_info['speed']}mm/min")
+                except ValueError:
+                    macro_info['speed'] = 300  # 默认300mm/min
+            else:
+                macro_info['speed'] = 300
+            
+            # 解析 Extruder (现在是数字)
+            extruder_match = re.search(r'Extruder:\s*(\d+)', message)
+            if extruder_match:
+                macro_info['extruder'] = int(extruder_match.group(1))
+                self.logger.info(f"解析到EXTRUDER参数: {macro_info['extruder']}")
+            else:
+                macro_info['extruder'] = 0
+            
+            # 解析 Duration
+            duration_match = re.search(r'Duration:\s*([\d.]+)\s*minutes', message)
+            if duration_match:
+                try:
+                    macro_info['duration'] = float(duration_match.group(1))
                     self.logger.info(f"解析到DURATION参数: {macro_info['duration']} 分钟")
-                except ValueError as e:
-                    self.logger.error(f"解析DURATION参数失败: {e}")
+                except ValueError:
                     macro_info['duration'] = 1.0  # 默认1分钟
             else:
-                macro_info['duration'] = 1.0  # 默认1分钟
+                macro_info['duration'] = 1.0
             
             # 触发宏执行回调
             for callback in self.macro_callbacks:

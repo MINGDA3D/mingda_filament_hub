@@ -793,27 +793,31 @@ class FeederCabinetApp:
             self.logger.info(f"检测到宏命令执行: {macro_name}, 参数: {macro_info}")
             
             if macro_name == 'LOAD_FILAMENT':
-                # 获取DURATION参数（分钟）
+                # 获取所有参数
                 duration = macro_info.get('duration', 1.0)  # 默认1分钟
+                length = macro_info.get('length', 50)  # 默认50mm
+                speed = macro_info.get('speed', 300)  # 默认300mm/min
+                extruder_num = macro_info.get('extruder', 0)  # 默认0号挤出机
                 
-                # 获取当前活跃的挤出机
-                active_extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
+                # 将速度从mm/min转换为速度等级(1-10)
+                # 100mm/min对应1, 1000mm/min对应10
+                speed_level = min(10, max(1, int(speed / 100)))
                 
-                # 从挤出机映射获取对应的料管号
-                tube_index = self.config.get('extruders', {}).get('mapping', {}).get(str(active_extruder), active_extruder)
-                
-                self.logger.info(f"触发送料: 挤出机{active_extruder} -> 料管{tube_index}, 持续时间: {duration}分钟")
+                self.logger.info(f"触发送料: 挤出机 #{extruder_num}")
+                self.logger.info(f"  参数: 长度={length}mm, 速度={speed}mm/min(等级{speed_level}), 持续时间={duration}分钟")
                 
                 # 发送送料命令到送料柜
                 if self.can_comm and self.can_comm.connected:
-                    # 使用duration参数（分钟）
+                    # 传递所有参数
                     success = await self.can_comm.request_feed(
-                        tube_id=tube_index,
+                        extruder_id=extruder_num,
+                        length=int(length),  # 转换为整数mm
+                        speed=speed_level,   # 速度等级1-10
                         duration=int(duration)  # 转换为整数分钟
                     )
                     
                     if success:
-                        self.logger.info(f"成功发送送料命令: 料管{tube_index}, 持续{duration}分钟")
+                        self.logger.info(f"成功发送送料命令: 挤出机{extruder_num}, 长度{length}mm, 速度等级{speed_level}, 持续{duration}分钟")
                     else:
                         self.logger.error(f"发送送料命令失败")
                 else:
@@ -823,17 +827,14 @@ class FeederCabinetApp:
                 # 获取当前活跃的挤出机
                 active_extruder = self.klipper_monitor.active_extruder if self.klipper_monitor else 0
                 
-                # 从挤出机映射获取对应的料管号
-                tube_index = self.config.get('extruders', {}).get('mapping', {}).get(str(active_extruder), active_extruder)
-                
-                self.logger.info(f"触发停止送料: 挤出机{active_extruder} -> 料管{tube_index}")
+                self.logger.info(f"触发停止送料: 挤出机{active_extruder}")
                 
                 # 发送停止送料命令
                 if self.can_comm and self.can_comm.connected:
-                    success = await self.can_comm.stop_feed(tube_id=tube_index)
+                    success = await self.can_comm.stop_feed(extruder_id=active_extruder)
                     
                     if success:
-                        self.logger.info(f"成功发送停止送料命令: 料管{tube_index}")
+                        self.logger.info(f"成功发送停止送料命令: 挤出机{active_extruder}")
                     else:
                         self.logger.error(f"发送停止送料命令失败")
                 else:
@@ -1061,7 +1062,7 @@ class FeederCabinetApp:
             
             self.logger.info(f"ACTION: 检测到活跃挤出机 {extruder} 缺料，请求补料，对应料管ID: {tube_id}")
             
-            if not await self.can_comm.request_feed(tube_id=tube_id):
+            if not await self.can_comm.request_feed(extruder_id=extruder):
                 self.logger.error(f"ACTION FAILED: 为挤出机 {extruder} (料管ID: {tube_id}) 请求补料失败！进入错误状态。")
                 self.state_manager.transition_to(SystemStateEnum.ERROR, reason=f"Failed to request feed for extruder {extruder}")
             else:
@@ -1115,7 +1116,7 @@ class FeederCabinetApp:
                         
                         self.logger.info(f"ACTION: 检测到活跃挤出机 {extruder} 缺料，请求补料，对应料管ID: {tube_id}")
                         
-                        if not await self.can_comm.request_feed(tube_id=tube_id):
+                        if not await self.can_comm.request_feed(extruder_id=extruder):
                              self.logger.error(f"ACTION FAILED: 为挤出机 {extruder} (料管ID: {tube_id}) 请求补料失败！进入错误状态。")
                              self.state_manager.transition_to(SystemStateEnum.ERROR, reason=f"Failed to request feed for extruder {extruder}")
                         else:

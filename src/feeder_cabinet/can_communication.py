@@ -629,12 +629,12 @@ class FeederCabinetCAN:
             self.logger.error(f"构建或发送消息时发生未知错误: {str(e)}")
             return False
     
-    async def request_feed(self, tube_id: int = 0, length: int = None, speed: int = None, duration: int = None) -> bool:
+    async def request_feed(self, extruder_id: int = 0, length: int = None, speed: int = None, duration: int = None) -> bool:
         """
         请求送料
         
         Args:
-            tube_id: 料管编号 (0-255)
+            extruder_id: 挤出机编号 (0-255)
             length: 送料长度(mm)，0-255，可选
             speed: 送料速度等级(1-10对应100-1000mm/min)，可选
             duration: 送料时间(分钟)，0-255，可选
@@ -663,10 +663,10 @@ class FeederCabinetCAN:
             speed_byte = min(max(speed if speed is not None else 3, 1), 10)         # 速度等级：1-10
             duration_byte = min(max(duration if duration is not None else 0, 0), 255)  # 时间：0-255分钟
             
-            # 格式: [CMD_ID, TUBE_ID, LENGTH, SPEED_LEVEL, DURATION, 保留, 保留, 保留]
+            # 格式: [CMD_ID, EXTRUDER_ID, LENGTH, SPEED_LEVEL, DURATION, 保留, 保留, 保留]
             data = [
                 self.CMD_REQUEST_FEED,
-                tube_id & 0xFF,     # 料管ID
+                extruder_id & 0xFF,     # 挤出机ID
                 length_byte,        # 长度(mm)
                 speed_byte,         # 速度等级(1-10)
                 duration_byte,      # 时间(分钟)
@@ -683,7 +683,7 @@ class FeederCabinetCAN:
 
             if await self._send_with_retry(msg):
                 actual_speed = speed_byte * 100
-                self.logger.info(f"已发送补料请求: 料管ID={tube_id}, 长度={length_byte}mm, 速度等级={speed_byte}({actual_speed}mm/min), 时间={duration_byte}分钟")
+                self.logger.info(f"已发送补料请求: 挤出机ID={extruder_id}, 长度={length_byte}mm, 速度等级={speed_byte}({actual_speed}mm/min), 时间={duration_byte}分钟")
                 self.logger.debug(f"CAN数据={[hex(x) for x in data]}")
                 return True
             else:
@@ -693,12 +693,12 @@ class FeederCabinetCAN:
             self.logger.error(f"构建或发送补料请求时失败: {str(e)}")
             return False
     
-    async def stop_feed(self, tube_id: int = 0) -> bool:
+    async def stop_feed(self, extruder_id: int = 0) -> bool:
         """
         停止送料
         
         Args:
-            tube_id: 料管编号
+            extruder_id: 挤出机编号
             
         Returns:
             bool: 停止请求是否成功
@@ -708,8 +708,8 @@ class FeederCabinetCAN:
             return False
             
         try:
-            # 格式: [CMD_ID, IS_VALID, TUBE_ID, ...]
-            data = [self.CMD_STOP_FEED, 0x00, tube_id, 0x00, 0x00, 0x00, 0x00, 0x00]
+            # 格式: [CMD_ID, IS_VALID, EXTRUDER_ID, ...]
+            data = [self.CMD_STOP_FEED, 0x00, extruder_id, 0x00, 0x00, 0x00, 0x00, 0x00]
             
             msg = can.Message(
                 arbitration_id=self.SEND_ID,
@@ -718,7 +718,7 @@ class FeederCabinetCAN:
             )
 
             if await self._send_with_retry(msg):
-                self.logger.info(f"已发送停止送料请求: 料管ID={tube_id}, 数据={[hex(x) for x in data]}")
+                self.logger.info(f"已发送停止送料请求: 挤出机ID={extruder_id}, 数据={[hex(x) for x in data]}")
                 return True
             else:
                 return False
