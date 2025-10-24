@@ -653,20 +653,51 @@ class FeederCabinetApp:
             await self.klipper_monitor.execute_gcode("M400")
             self.logger.info("暂停移动已完成")
 
-            # 步骤2: 检查UNLOAD_FILAMENT宏是否存在
-            self.logger.info("步骤2: 检查UNLOAD_FILAMENT宏")
+            # 步骤2: 两阶段同步退料策略
+            # UNLOAD_FILAMENT宏执行流程分析：
+            # - 阶段1 (前8秒): 预准备(+5mm) + 塑形反复进退10次，净后退约5mm
+            # - 阶段2 (后10秒): 大幅后退95mm
+            # 总计：净后退100mm，总用时约17秒
+
+            self.logger.info("步骤2: 开始两阶段同步退料（送料柜与挤出机同步）")
+
+            # 阶段1预备：送料柜先退5mm，为塑形阶段预留空间
+            self.logger.info("阶段1预备: 送料柜先退5mm，避免塑形阶段拉扯耗材")
+            if await self.can_comm.retract_filament(buffer_id, distance=1, speed=0):
+                # 档位1=5mm, 速度0=10mm/s, 用时0.5秒
+                self.logger.info("送料柜已退5mm (10mm/s，用时0.5秒)")
+                await asyncio.sleep(0.5)
+            else:
+                self.logger.error("送料柜预退料失败，中止换料流程")
+                return
+
+            # 检查UNLOAD_FILAMENT宏
+            self.logger.info("步骤3: 检查并启动UNLOAD_FILAMENT宏")
             if not await self.klipper_monitor.check_gcode_macro_exists("UNLOAD_FILAMENT"):
                 self.logger.error("未找到UNLOAD_FILAMENT宏，跳过卸料步骤")
             else:
-                # 步骤3: 执行卸料宏
-                self.logger.info("步骤3: 执行UNLOAD_FILAMENT宏")
+                # 启动UNLOAD_FILAMENT宏（异步执行，不等待完成）
+                self.logger.info("启动UNLOAD_FILAMENT宏（塑形+后退100mm）")
                 if await self.klipper_monitor.execute_gcode("UNLOAD_FILAMENT"):
-                    self.logger.info("UNLOAD_FILAMENT宏已执行，等待卸料完成")
-                    # 使用M400等待卸料宏中的所有移动完成
+                    self.logger.info("UNLOAD_FILAMENT宏已启动")
+
+                    # 阶段1: 等待塑形阶段完成（约7.5秒）
+                    # 此时挤出机在做复杂的前进后退动作形成尖角
+                    self.logger.info("阶段1: 等待挤出机塑形阶段完成（约7.5秒）...")
+                    await asyncio.sleep(7.5)
+
+                    # 阶段2: 送料柜大幅后退，与挤出机的95mm后退同步
+                    # 挤出机会后退95mm，送料柜退100mm（略多5mm以确保完全退出）
+                    self.logger.info("阶段2: 送料柜大幅后退100mm，与挤出机同步")
+                    if await self.can_comm.retract_filament(buffer_id, distance=5, speed=0):
+                        # 档位5=100mm, 速度0=10mm/s, 用时10秒
+                        self.logger.info("送料柜开始退100mm (10mm/s，用时10秒)")
+                    else:
+                        self.logger.error("送料柜大幅退料命令发送失败")
+
+                    # 等待挤出机和送料柜的所有移动完成
                     await self.klipper_monitor.execute_gcode("M400")
-                    self.logger.info("卸料移动已完成，等待30秒后开始退料")
-                    # 等待30秒再进行退料
-                    await asyncio.sleep(30.0)
+                    self.logger.info("两阶段同步退料完成：挤出机已退100mm，送料柜已退105mm")
                 else:
                     self.logger.error("执行UNLOAD_FILAMENT宏失败")
 
