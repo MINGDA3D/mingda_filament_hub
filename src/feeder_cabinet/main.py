@@ -685,10 +685,10 @@ class FeederCabinetApp:
             self.logger.info("等待挤出机塑形阶段（约7.5秒）...")
             await asyncio.sleep(7.5)
 
-            # 送料柜大幅后退，与挤出机的50mm后退同步
-            # 挤出机会后退50mm，送料柜也退50mm，保持同步
-            self.logger.info("送料柜开始后退50mm，与挤出机同步退料")
-            if not await self.can_comm.retract_filament(buffer_id, distance=4, speed=0):
+            # 送料柜大幅后退，与挤出机的100mm后退同步
+            # 挤出机会后退100mm，送料柜也退100mm，保持同步
+            self.logger.info("送料柜开始后退100mm，与挤出机同步退料")
+            if not await self.can_comm.retract_filament(buffer_id, distance=5, speed=0):
                 self.logger.error("送料柜退料命令发送失败，中止换料流程")
                 return
 
