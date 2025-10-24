@@ -62,6 +62,7 @@ class FeederCabinetCAN:
     CMD_RFID_DATA_END          = 0x18       # RFID数据传输结束
     CMD_RFID_READ_ERROR        = 0x19       # RFID读取错误
     CMD_FILAMENT_OUT_NOTIFY    = 0x1A       # 断料通知
+    CMD_LOW_WEIGHT_NOTIFY      = 0x1B       # 低重量通知
     CMD_RETRACT_FILAMENT       = 0x1E       # 回退耗材
     CMD_EXTRUDE_FILAMENT       = 0x1F       # 挤出耗材
 
@@ -98,6 +99,7 @@ class FeederCabinetCAN:
         self.reconnect_callback: Optional[Callable[[], Coroutine]] = None  # 重连成功回调
         self.rfid_callback: Optional[Callable[[Dict], Coroutine]] = None  # RFID数据回调
         self.filament_out_callback: Optional[Callable[[Dict], Coroutine]] = None  # 断料通知回调
+        self.low_weight_callback: Optional[Callable[[Dict], Coroutine]] = None  # 低重量通知回调
         
         # 异步任务和锁
         self.rx_task: Optional[asyncio.Task] = None
@@ -387,6 +389,44 @@ class FeederCabinetCAN:
                                     self.logger.debug("断料通知无效或没有设置回调函数")
                             else:
                                 self.logger.warning(f"断料通知数据长度不足: {len(msg.data)} < 6")
+                        elif command == self.CMD_LOW_WEIGHT_NOTIFY:
+                            # 低重量通知消息
+                            if len(msg.data) >= 7:
+                                is_valid = msg.data[1]
+                                filament_id = msg.data[2]
+                                buffer_id = msg.data[3]
+                                net_weight = (msg.data[4] << 8) | msg.data[5]  # 高字节在前
+                                material_type = msg.data[6]
+
+                                # 解析耗材类型
+                                material_types = {
+                                    0x00: "未知",      # Unknown
+                                    0x01: "PLA",       # PLA
+                                    0x02: "PETG",      # PETG
+                                    0x03: "ABS",       # ABS
+                                    0x04: "ASA",       # ASA
+                                    0xFF: "其他"       # Other
+                                }
+                                material_name = material_types.get(material_type, "未定义")
+
+                                self.logger.info(f"收到低重量通知: 有效={is_valid}, 耗材通道={filament_id}, "
+                                               f"缓冲区={'左' if buffer_id == 0 else '右'}({buffer_id}), 净重量={net_weight}g, "
+                                               f"耗材类型={material_name}(0x{material_type:02X})")
+
+                                if is_valid == 0x01 and filament_id < 6 and buffer_id < 2 and self.low_weight_callback:
+                                    low_weight_data = {
+                                        'is_valid': is_valid,
+                                        'filament_id': filament_id,
+                                        'buffer_id': buffer_id,
+                                        'net_weight': net_weight,
+                                        'material_type': material_type,
+                                        'material_name': material_name
+                                    }
+                                    asyncio.create_task(self.low_weight_callback(low_weight_data))
+                                else:
+                                    self.logger.debug("低重量通知无效或没有设置回调函数")
+                            else:
+                                self.logger.warning(f"低重量通知数据长度不足: {len(msg.data)} < 7")
                         else:
                             # 检查是否为心跳响应 (根据你的candump，响应格式为: 05 00 FA E2 7E)
                             if len(msg.data) >= 1 and msg.data[0] == 0x05:
@@ -561,11 +601,20 @@ class FeederCabinetCAN:
     def set_filament_out_callback(self, callback: Callable[[Dict], Coroutine]):
         """
         设置断料通知回调函数
-        
+
         Args:
             callback: 断料通知回调函数，接收包含断料信息的字典
         """
         self.filament_out_callback = callback
+
+    def set_low_weight_callback(self, callback: Callable[[Dict], Coroutine]):
+        """
+        设置低重量通知回调函数
+
+        Args:
+            callback: 低重量通知回调函数，接收包含低重量信息的字典
+        """
+        self.low_weight_callback = callback
     
     async def _send_with_retry(self, msg: 'can.Message', retries: int = 3, retry_delay: float = 0.05) -> bool:
         """

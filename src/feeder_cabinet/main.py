@@ -567,10 +567,74 @@ class FeederCabinetApp:
         except Exception as e:
             self.logger.error(f"处理RFID消息时发生错误: {e}", exc_info=True)
     
+    async def _handle_low_weight_notify(self, data: dict):
+        """
+        处理低重量通知
+
+        Args:
+            data: 包含低重量信息的字典
+        """
+        try:
+            filament_id = data.get('filament_id')
+            buffer_id = data.get('buffer_id')
+            net_weight = data.get('net_weight')
+            material_type = data.get('material_type', 0x00)
+            material_name = data.get('material_name', '未知')
+
+            # 从buffer_id反向查找对应的extruder_id
+            extruder_mapping = self.config.get('extruders', {}).get('mapping', {})
+            extruder_id = None
+            for ext_id, buf_id in extruder_mapping.items():
+                if buf_id == buffer_id:
+                    extruder_id = ext_id
+                    break
+
+            if extruder_id is None:
+                self.logger.warning(f"无法从缓冲区ID {buffer_id} 找到对应的挤出机映射关系，忽略低重量通知")
+                return
+
+            self.logger.warning(f"处理低重量通知: 耗材通道={filament_id}, 缓冲区={'左' if buffer_id == 0 else '右'}({buffer_id}), "
+                              f"对应挤出机={extruder_id}, 净重量={net_weight}g, 耗材类型={material_name}")
+
+            # 检查是否处于打印状态
+            if not self.klipper_monitor or not self.klipper_monitor.ws_connected:
+                self.logger.warning("Klipper未连接，无法处理低重量通知")
+                return
+
+            printer_status = self.klipper_monitor.get_printer_status()
+            if not printer_status:
+                self.logger.warning("无法获取打印机状态")
+                return
+
+            printer_state = printer_status.get('printer_state', 'unknown')
+            active_extruder = printer_status.get('active_extruder', 0)
+
+            self.logger.info(f"当前打印机状态: {printer_state}, 活跃挤出机: {active_extruder}")
+
+            # 只有当buffer_id对应的extruder_id是活跃挤出机时才暂停打印
+            if printer_state != 'printing':
+                self.logger.info(f"打印机不在打印状态({printer_state})，忽略低重量通知")
+                return
+
+            if extruder_id != active_extruder:
+                self.logger.info(f"缓冲区{buffer_id}对应挤出机{extruder_id}不是活跃挤出机({active_extruder})，忽略低重量通知")
+                return
+
+            # 确认是活跃挤出机且在打印中，执行暂停
+            self.logger.warning(f"检测到活跃挤出机{extruder_id}(缓冲区{buffer_id})的耗材重量过低({net_weight}g)，暂停打印")
+
+            if await self.klipper_monitor.pause_print():
+                self.logger.info(f"因耗材重量过低已暂停打印，请更换耗材")
+            else:
+                self.logger.error("暂停打印失败")
+
+        except Exception as e:
+            self.logger.error(f"处理低重量通知时发生错误: {e}", exc_info=True)
+
     async def _handle_filament_runout(self, data: dict):
         """
         处理断料通知
-        
+
         Args:
             data: 包含断料信息的字典
         """
@@ -580,7 +644,7 @@ class FeederCabinetApp:
             status = data.get('status')
             material_type = data.get('material_type', 0x00)
             material_name = data.get('material_name', '未知')
-            
+
             self.logger.info(f"处理断料通知: 耗材通道={filament_id}, 挤出机={extruder_id}, 状态={status}, 耗材类型={material_name}")
             
             # # 检查是否为未知或其他耗材类型，如果是则暂停打印
@@ -1193,6 +1257,7 @@ class FeederCabinetApp:
             self.can_comm.set_reconnect_callback(self._handle_can_reconnect)
             self.can_comm.set_rfid_callback(self._handle_rfid_message)  # 设置RFID回调
             self.can_comm.set_filament_out_callback(self._handle_filament_runout)  # 设置断料回调
+            self.can_comm.set_low_weight_callback(self._handle_low_weight_notify)  # 设置低重量通知回调
             
             # 为CAN通信模块设置logger
             self.can_comm.logger = self.log_manager.get_child_logger(self.logger, "can")
