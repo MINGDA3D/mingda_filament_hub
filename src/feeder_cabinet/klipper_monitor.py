@@ -55,6 +55,7 @@ class KlipperMonitor:
         self.toolhead_info = {}
         self.extruder_info = {}
         self.extruder1_info = {}
+        self.motion_report = {}  # 新增：运动报告状态
         self.filament_sensors_status: Dict[str, bool] = {}
         self.active_extruder = 0
 
@@ -317,6 +318,11 @@ class KlipperMonitor:
             self.logger.debug(f"extruder1更新: {status['extruder1']}")
             self.extruder1_info.update(status['extruder1'])
 
+        # 新增：处理运动报告状态
+        if 'motion_report' in status:
+            self.motion_report.update(status['motion_report'])
+            self._handle_extruder_motion_update(status['motion_report'])
+
         for i, sensor_obj in enumerate(self.filament_sensor_objects):
             if sensor_obj in status and "filament_detected" in status[sensor_obj]:
                 sensor_name = self.filament_sensor_names[i]
@@ -325,6 +331,57 @@ class KlipperMonitor:
                 if self.filament_sensors_status.get(sensor_name) != new_state:
                     self.logger.info(f"断料传感器 {sensor_name} 状态变化: {'有料' if new_state else '无料'}")
                 self.filament_sensors_status[sensor_name] = new_state
+    
+    def _handle_extruder_motion_update(self, motion_data: Dict[str, Any]):
+        """处理挤出机运动状态更新"""
+        extruder_velocity = motion_data.get('live_extruder_velocity', 0.0)
+        live_position = motion_data.get('live_position', [])
+        
+        # 获取当前激活的挤出头
+        active_extruder = self.toolhead_info.get('extruder', 'extruder')
+        
+        # 判断挤出机运动状态
+        if extruder_velocity > 0.0:
+            motion_state = "进料"
+            self.logger.debug(f"{active_extruder} 正在进料，速度: {extruder_velocity:.2f} mm/s")
+        elif extruder_velocity < 0.0:
+            motion_state = "退料"
+            self.logger.debug(f"{active_extruder} 正在退料，速度: {extruder_velocity:.2f} mm/s")
+        else:
+            motion_state = "停止"
+            # 仅在状态变化时记录，避免日志过多
+            if hasattr(self, '_last_motion_state') and self._last_motion_state != motion_state:
+                self.logger.debug(f"{active_extruder} 停止运动")
+        
+        # 记录状态变化
+        if not hasattr(self, '_last_motion_state') or self._last_motion_state != motion_state:
+            if motion_state != "停止":  # 停止状态不记录info级别日志，避免过多
+                self.logger.info(f"挤出机运动状态变化: {active_extruder} -> {motion_state} (速度: {extruder_velocity:.2f} mm/s)")
+            self._last_motion_state = motion_state
+        
+        # 更新活动挤出头信息
+        extruder_index = 0 if active_extruder == 'extruder' else 1
+        if extruder_index != self.active_extruder:
+            self.active_extruder = extruder_index
+            self.logger.info(f"活动挤出头切换: extruder{extruder_index} ({active_extruder})")
+        
+        # 记录详细的运动数据用于调试
+        self.logger.debug(f"运动报告详情 - 挤出头: {active_extruder}, 速度: {extruder_velocity:.2f}, 位置: {live_position}")
+        
+        # 检查两个挤出头的状态
+        for extruder_name, extruder_info in [("extruder", self.extruder_info), ("extruder1", self.extruder1_info)]:
+            if extruder_info:
+                can_extrude = extruder_info.get("can_extrude", False)
+                temperature = extruder_info.get("temperature", 0)
+                target_temp = extruder_info.get("target", 0)
+                is_active = (extruder_name == active_extruder)
+                
+                self.logger.debug(f"{extruder_name}: 温度={temperature:.1f}°C (目标:{target_temp:.1f}°C), "
+                                f"可挤出={can_extrude}, 激活状态={'是' if is_active else '否'}")
+                
+                # 如果是激活的挤出头且在运动，记录更详细信息
+                if is_active and motion_state != "停止":
+                    self.logger.debug(f"激活挤出头 {extruder_name} 运动详情: {motion_state}, 速度={extruder_velocity:.2f} mm/s")
     
     async def _query_current_status(self):
         """主动查询当前打印机状态"""
@@ -341,6 +398,7 @@ class KlipperMonitor:
                     "objects": {
                         "print_stats": None,
                         "toolhead": None,
+                        "motion_report": None,  # 新增：查询运动报告
                         "extruder": None,
                         "extruder1": None
                     }
@@ -372,6 +430,7 @@ class KlipperMonitor:
                             "objects": {
                                 "print_stats": None,
                                 "toolhead": None,
+                                "motion_report": None,  # 新增：查询运动报告
                                 "extruder": None,
                                 "extruder1": None
                             }
@@ -416,9 +475,13 @@ class KlipperMonitor:
             
         try:
             objects_dict = {
-                "print_stats": None, "toolhead": ["extruder", "position"],
-                "extruder": None, "extruder1": None,
-                "virtual_sdcard": None, "pause_resume": None,
+                "print_stats": None, 
+                "toolhead": ["extruder", "position"],
+                "motion_report": ["live_extruder_velocity", "live_position"],  # 新增：运动报告订阅
+                "extruder": ["can_extrude", "temperature", "target"],
+                "extruder1": ["can_extrude", "temperature", "target"],
+                "virtual_sdcard": None, 
+                "pause_resume": None,
             }
             for sensor_obj in self.filament_sensor_objects:
                 objects_dict[sensor_obj] = None
@@ -569,6 +632,7 @@ class KlipperMonitor:
             'printer_state': self.printer_state,
             'print_stats': self.print_stats,
             'toolhead': self.toolhead_info,
+            'motion_report': self.motion_report,  # 新增：运动报告状态
             'extruder': self.extruder_info,
             'extruder1': self.extruder1_info,
             'active_extruder': self.active_extruder,
@@ -578,3 +642,39 @@ class KlipperMonitor:
     def get_filament_status(self) -> Dict[str, bool]:
         """获取断料传感器状态"""
         return self.filament_sensors_status.copy()
+
+    def get_extruder_motion_status(self) -> Dict[str, Any]:
+        """获取双挤出头运动状态信息"""
+        active_extruder = self.toolhead_info.get('extruder', 'extruder')
+        extruder_velocity = self.motion_report.get('live_extruder_velocity', 0.0)
+        live_position = self.motion_report.get('live_position', [])
+        
+        # 判断运动状态
+        if extruder_velocity > 0.0:
+            motion_state = "进料"
+        elif extruder_velocity < 0.0:
+            motion_state = "退料" 
+        else:
+            motion_state = "停止"
+        
+        return {
+            'active_extruder': active_extruder,
+            'active_extruder_index': self.active_extruder,
+            'extruder_velocity': extruder_velocity,
+            'motion_state': motion_state,
+            'live_position': live_position,
+            'extruder_info': {
+                'extruder': {
+                    'can_extrude': self.extruder_info.get('can_extrude', False),
+                    'temperature': self.extruder_info.get('temperature', 0),
+                    'target': self.extruder_info.get('target', 0),
+                    'is_active': active_extruder == 'extruder'
+                },
+                'extruder1': {
+                    'can_extrude': self.extruder1_info.get('can_extrude', False),
+                    'temperature': self.extruder1_info.get('temperature', 0),
+                    'target': self.extruder1_info.get('target', 0),
+                    'is_active': active_extruder == 'extruder1'
+                }
+            }
+        }

@@ -62,7 +62,8 @@ class FeederCabinetCAN:
     CMD_RFID_DATA_END          = 0x18       # RFID数据传输结束
     CMD_RFID_READ_ERROR        = 0x19       # RFID读取错误
     CMD_FILAMENT_OUT_NOTIFY    = 0x1A       # 断料通知
-    
+    CMD_RETRACT_FILAMENT       = 0x1E       # 回退耗材
+
     def __init__(self, interface: str = 'can0', bitrate: int = 1000000):
         """
         初始化CAN通信类
@@ -881,4 +882,61 @@ class FeederCabinetCAN:
             
         except Exception as e:
             self.logger.error(f"构建或发送RFID数据请求时失败: {str(e)}")
-            return False 
+            return False
+
+    async def retract_filament(self, buffer_id: int, distance: int, speed: int) -> bool:
+        """
+        回退耗材命令
+
+        Args:
+            buffer_id: 缓冲区编号 (0=LEFT_BUFFER, 1=RIGHT_BUFFER)
+            distance: 回退距离档位 (0-7)
+                     0=1mm, 1=5mm, 2=10mm, 3=20mm, 4=50mm, 5=100mm, 6=200mm, 7=1000mm
+            speed: 回退速度档位 (0-7)
+                  0=10mm/s, 1=20mm/s, 2=30mm/s, 3=40mm/s, 4=50mm/s, 5=60mm/s, 6=70mm/s, 7=80mm/s
+
+        Returns:
+            bool: 发送是否成功
+        """
+        if not self.connected or not self.bus:
+            self.logger.error("未连接到CAN总线，无法发送消息")
+            return False
+
+        # 参数验证
+        if buffer_id not in [0, 1]:
+            self.logger.error(f"无效的缓冲区编号: {buffer_id}，必须为0或1")
+            return False
+
+        if distance < 0 or distance > 7:
+            self.logger.error(f"无效的距离档位: {distance}，必须为0-7")
+            return False
+
+        if speed < 0 or speed > 7:
+            self.logger.error(f"无效的速度档位: {speed}，必须为0-7")
+            return False
+
+        try:
+            # 距离映射表（用于日志显示）
+            distance_map = {0: 1, 1: 5, 2: 10, 3: 20, 4: 50, 5: 100, 6: 200, 7: 1000}
+            # 速度映射表（用于日志显示）
+            speed_map = {0: 10, 1: 20, 2: 30, 3: 40, 4: 50, 5: 60, 6: 70, 7: 80}
+
+            data = [self.CMD_RETRACT_FILAMENT, 0x01, buffer_id, distance, speed, 0x00, 0x00, 0x00]
+
+            msg = can.Message(
+                arbitration_id=self.SEND_ID,
+                data=data,
+                is_extended_id=False
+            )
+
+            if await self._send_with_retry(msg):
+                self.logger.info(f"已发送耗材回退命令: 缓冲区={'左' if buffer_id == 0 else '右'}, "
+                               f"距离={distance_map[distance]}mm, 速度={speed_map[speed]}mm/s, "
+                               f"数据={[hex(x) for x in data]}")
+                return True
+            else:
+                return False
+
+        except Exception as e:
+            self.logger.error(f"构建或发送耗材回退命令时失败: {str(e)}")
+            return False
