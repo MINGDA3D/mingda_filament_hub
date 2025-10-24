@@ -62,7 +62,7 @@ class FeederCabinetCAN:
     CMD_RFID_DATA_END          = 0x18       # RFID数据传输结束
     CMD_RFID_READ_ERROR        = 0x19       # RFID读取错误
     CMD_FILAMENT_OUT_NOTIFY    = 0x1A       # 断料通知
-    CMD_LOW_WEIGHT_NOTIFY      = 0x1B       # 低重量通知
+    CMD_LOW_WEIGHT_NOTIFY      = 0x1D       # 低重量通知
     CMD_RETRACT_FILAMENT       = 0x1E       # 回退耗材
     CMD_EXTRUDE_FILAMENT       = 0x1F       # 挤出耗材
 
