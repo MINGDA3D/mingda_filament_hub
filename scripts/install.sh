@@ -131,6 +131,7 @@ function patch_mingda_filament_hub_service_update() {
 
   for conf in ${moonraker_asvc}; do
     if ! grep -Eq "^mingda_filament_hub\s*$" "${conf}"; then
+      [[ $(tail -c1 "${conf}" | wc -l) -eq 0 ]] && echo "" >> "${conf}"
 
       /bin/sh -c "cat >> ${conf}" << MOONRAKER_ASVC
 mingda_filament_hub
