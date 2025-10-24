@@ -625,7 +625,42 @@ class KlipperMonitor:
             
     async def execute_gcode(self, command: str) -> bool:
         return await self._send_gcode(command)
-        
+
+    async def check_gcode_macro_exists(self, macro_name: str) -> bool:
+        """
+        检查Klipper中是否存在指定的宏
+
+        Args:
+            macro_name: 宏名称（如 "UNLOAD_FILAMENT"）
+
+        Returns:
+            bool: 宏是否存在
+        """
+        try:
+            # 使用Moonraker API查询gcode帮助信息
+            url = f"{self.moonraker_url}/printer/gcode/help"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        # 返回的数据格式是 {"result": {"COMMAND_NAME": "description", ...}}
+                        if 'result' in data:
+                            commands = data['result']
+                            # 检查宏是否存在（不区分大小写）
+                            macro_upper = macro_name.upper()
+                            exists = macro_upper in commands
+                            if exists:
+                                self.logger.info(f"找到宏: {macro_name}")
+                            else:
+                                self.logger.warning(f"宏不存在: {macro_name}")
+                            return exists
+                    else:
+                        self.logger.error(f"查询gcode帮助失败: HTTP {response.status}")
+                        return False
+        except Exception as e:
+            self.logger.error(f"检查宏是否存在时发生错误: {e}", exc_info=True)
+            return False
+
     def get_printer_status(self) -> Dict[str, Any]:
         """获取当前打印机状态的快照"""
         return {

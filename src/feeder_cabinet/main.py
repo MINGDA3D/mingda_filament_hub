@@ -620,16 +620,102 @@ class FeederCabinetApp:
                 self.logger.info(f"缓冲区{buffer_id}对应挤出机{extruder_id}不是活跃挤出机({active_extruder})，忽略低重量通知")
                 return
 
-            # 确认是活跃挤出机且在打印中，执行暂停
-            self.logger.warning(f"检测到活跃挤出机{extruder_id}(缓冲区{buffer_id})的耗材重量过低({net_weight}g)，暂停打印")
+            # 确认是活跃挤出机且在打印中，开始自动换料流程
+            self.logger.warning(f"检测到活跃挤出机{extruder_id}(缓冲区{buffer_id})的耗材重量过低({net_weight}g)，开始自动换料流程")
 
-            if await self.klipper_monitor.pause_print():
-                self.logger.info(f"因耗材重量过低已暂停打印，请更换耗材")
-            else:
-                self.logger.error("暂停打印失败")
+            # 启动换料任务
+            asyncio.create_task(self._auto_change_filament(extruder_id, buffer_id, net_weight))
 
         except Exception as e:
             self.logger.error(f"处理低重量通知时发生错误: {e}", exc_info=True)
+
+    async def _auto_change_filament(self, extruder_id: int, buffer_id: int, net_weight: int):
+        """
+        自动换料流程
+
+        Args:
+            extruder_id: 挤出机ID
+            buffer_id: 缓冲区ID
+            net_weight: 当前净重量
+        """
+        try:
+            self.logger.info(f"=== 开始自动换料流程 ===")
+            self.logger.info(f"挤出机: {extruder_id}, 缓冲区: {buffer_id}, 剩余重量: {net_weight}g")
+
+            # 步骤1: 暂停打印
+            self.logger.info("步骤1: 暂停打印")
+            if not await self.klipper_monitor.pause_print():
+                self.logger.error("暂停打印失败，中止换料流程")
+                return
+            self.logger.info("打印已暂停，等待移动完成")
+
+            # 使用M400等待所有计划的移动完成
+            await self.klipper_monitor.execute_gcode("M400")
+            self.logger.info("暂停移动已完成")
+
+            # 步骤2: 检查UNLOAD_FILAMENT宏是否存在
+            self.logger.info("步骤2: 检查UNLOAD_FILAMENT宏")
+            if not await self.klipper_monitor.check_gcode_macro_exists("UNLOAD_FILAMENT"):
+                self.logger.error("未找到UNLOAD_FILAMENT宏，跳过卸料步骤")
+            else:
+                # 步骤3: 执行卸料宏
+                self.logger.info("步骤3: 执行UNLOAD_FILAMENT宏")
+                if await self.klipper_monitor.execute_gcode("UNLOAD_FILAMENT"):
+                    self.logger.info("UNLOAD_FILAMENT宏已执行，等待卸料完成")
+                    # 使用M400等待卸料宏中的所有移动完成
+                    await self.klipper_monitor.execute_gcode("M400")
+                    self.logger.info("卸料移动已完成")
+                else:
+                    self.logger.error("执行UNLOAD_FILAMENT宏失败")
+
+            # 步骤4: 检查传感器状态并重试退料
+            self.logger.info("步骤4: 检查传感器状态并尝试退料")
+            max_retries = 3
+            retract_distance = 2  # 档位2 = 10mm
+            retract_speed = 0     # 档位0 = 10mm/s
+            sensor_name = f"Filament_Sensor{extruder_id}"
+
+            for retry in range(max_retries):
+                # 等待传感器状态更新
+                await asyncio.sleep(1.0)
+
+                # 检查传感器状态
+                sensor_states = self.klipper_monitor.get_filament_status()
+                sensor_obj_name = f"filament_switch_sensor {sensor_name}"
+                has_filament = sensor_states.get(sensor_obj_name, False)
+
+                self.logger.info(f"传感器 {sensor_name} 状态: {'有料' if has_filament else '无料'}")
+
+                if not has_filament:
+                    self.logger.info("传感器确认无料，退料成功")
+                    break
+
+                # 仍有料，发送退料命令
+                self.logger.warning(f"传感器仍检测到有料，执行第 {retry + 1}/{max_retries} 次退料 (10mm, 10mm/s)")
+                if await self.can_comm.retract_filament(buffer_id, retract_distance, retract_speed):
+                    self.logger.info("退料命令已发送")
+                    await asyncio.sleep(3.0)  # 等待退料完成
+                else:
+                    self.logger.error("发送退料命令失败")
+                    break
+            else:
+                # 3次后仍有料
+                self.logger.error(f"重试{max_retries}次后传感器仍检测到有料，可能需要人工干预")
+                self.logger.error("换料流程失败，打印保持暂停状态")
+                return
+
+            # 步骤5: 发送续料命令
+            self.logger.info("步骤5: 传感器确认无料，发送续料命令")
+            if await self.can_comm.request_feed(tube_id=buffer_id):
+                self.logger.info(f"续料命令已发送到缓冲区{buffer_id}")
+                self.logger.info("等待送料柜完成续料，完成后将自动恢复打印")
+                self.logger.info("=== 自动换料流程完成（等待续料） ===")
+            else:
+                self.logger.error("发送续料命令失败，换料流程失败")
+
+        except Exception as e:
+            self.logger.error(f"自动换料流程发生错误: {e}", exc_info=True)
+            self.logger.error("换料流程失败，打印保持暂停状态")
 
     async def _handle_filament_runout(self, data: dict):
         """
