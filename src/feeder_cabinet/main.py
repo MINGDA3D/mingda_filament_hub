@@ -664,7 +664,9 @@ class FeederCabinetApp:
                     self.logger.info("UNLOAD_FILAMENT宏已执行，等待卸料完成")
                     # 使用M400等待卸料宏中的所有移动完成
                     await self.klipper_monitor.execute_gcode("M400")
-                    self.logger.info("卸料移动已完成")
+                    self.logger.info("卸料移动已完成，等待30秒后开始退料")
+                    # 等待30秒再进行退料
+                    await asyncio.sleep(30.0)
                 else:
                     self.logger.error("执行UNLOAD_FILAMENT宏失败")
 
