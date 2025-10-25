@@ -683,12 +683,17 @@ class FeederCabinetApp:
             # 等待塑形阶段完成（约7.5秒）
             # 此时挤出机在做复杂的前进后退动作形成尖角
             self.logger.info("等待挤出机塑形阶段（约7.5秒）...")
-            await asyncio.sleep(7.5)
+            await asyncio.sleep(2.5)
 
+            if not await self.can_comm.retract_filament(buffer_id, distance=3, speed=0):
+                self.logger.error("送料柜退料命令发送失败，中止换料流程")
+                return
+
+            await asyncio.sleep(5.5)
             # 送料柜大幅后退，与挤出机的100mm后退同步
             # 挤出机会后退100mm，送料柜也退100mm，保持同步
             self.logger.info("送料柜开始后退100mm，与挤出机同步退料")
-            if not await self.can_comm.retract_filament(buffer_id, distance=5, speed=0):
+            if not await self.can_comm.retract_filament(buffer_id, distance=4, speed=0):
                 self.logger.error("送料柜退料命令发送失败，中止换料流程")
                 return
 
@@ -697,8 +702,12 @@ class FeederCabinetApp:
 
             # 等待送料柜退料完成（5秒）+ 额外缓冲时间
             self.logger.info("等待送料柜退料完成...")
-            await asyncio.sleep(15.5)
+            await asyncio.sleep(5.5)
 
+            self.logger.info("送料柜开始后退100mm，与挤出机同步退料")
+            if not await self.can_comm.retract_filament(buffer_id, distance=4, speed=5):
+                self.logger.error("送料柜退料命令发送失败，中止换料流程")
+                return
             # 等待挤出机的所有移动完成
             await self.klipper_monitor.execute_gcode("M400")
             self.logger.info("同步退料完成：挤出机已退50mm，送料柜已退50mm")
