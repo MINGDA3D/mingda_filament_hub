@@ -726,9 +726,14 @@ class FeederCabinetApp:
 
             # 检查传感器是否检测到断料
             for retry in range(max_retries + 1):  # +1 是第一次检查
-                # 获取传感器状态
-                sensor_states = self.klipper_monitor.get_filament_status()
-                has_filament = sensor_states.get(sensor_obj_name, True)  # 默认True更安全
+                # 检查系统状态：如果已经转换到FEEDING，说明Klipper监控器已经检测到断料并触发了补料
+                if self.state_manager.state == SystemStateEnum.FEEDING:
+                    self.logger.info("✓ 检测到系统已转换到FEEDING状态，Klipper监控器已触发补料")
+                    self.logger.info("退料流程已完成，补料流程已由Klipper监控器启动，退出换料流程")
+                    return
+
+                # 获取传感器状态（使用本地缓存_last_filament_status，key是完整对象名）
+                has_filament = self._last_filament_status.get(sensor_obj_name, True)
 
                 self.logger.info(f"传感器 {sensor_name} 状态检查 (第{retry + 1}次): {'有料' if has_filament else '无料'}")
 
@@ -758,10 +763,15 @@ class FeederCabinetApp:
             # 步骤5: 最终确认断料后发送续料命令
             self.logger.info("步骤5: 最终确认断料状态，准备发送续料命令")
 
-            # 再次确认传感器状态
+            # 检查系统状态：如果已经转换到FEEDING，说明补料已经触发，不需要再发送
+            if self.state_manager.state == SystemStateEnum.FEEDING:
+                self.logger.info("✓ 系统已在FEEDING状态，补料流程已启动，无需重复发送")
+                self.logger.info("=== 自动换料流程完成（补料已由监控器触发） ===")
+                return
+
+            # 再次确认传感器状态（使用本地缓存_last_filament_status，key是完整对象名）
             await asyncio.sleep(1.0)
-            sensor_states = self.klipper_monitor.get_filament_status()
-            has_filament = sensor_states.get(sensor_obj_name, True)
+            has_filament = self._last_filament_status.get(sensor_obj_name, True)
 
             if has_filament:
                 self.logger.error("✗ 最终检查：传感器仍检测到有料，不安全，中止换料流程")
@@ -776,9 +786,11 @@ class FeederCabinetApp:
                 self.logger.info(f"✓ 续料命令已发送到缓冲区{buffer_id}")
                 self.logger.info("等待送料柜完成续料，完成后将自动恢复打印")
                 self.logger.info("=== 自动换料流程完成（等待续料） ===")
+                return
             else:
                 self.logger.error("✗ 发送续料命令失败，换料流程失败")
                 self.logger.error("打印保持暂停状态，请检查送料柜连接")
+                return
 
         except Exception as e:
             self.logger.error(f"自动换料流程发生错误: {e}", exc_info=True)
