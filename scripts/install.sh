@@ -27,6 +27,18 @@ HOME="/home/mingda"
 
 echo "项目目录: $PROJECT_DIR"
 
+# 修复过期的 backports 仓库
+echo "正在检查并修复 APT 仓库配置..."
+if grep -q "bullseye-backports" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then
+  echo "检测到 bullseye-backports 仓库，正在禁用..."
+  # 备份 sources.list
+  cp /etc/apt/sources.list /etc/apt/sources.list.backup.$(date +%Y%m%d_%H%M%S)
+  # 注释掉 backports 行
+  sed -i 's/^deb.*bullseye-backports.*/#&/' /etc/apt/sources.list
+  sed -i 's/^deb.*bullseye-backports.*/#&/' /etc/apt/sources.list.d/* 2>/dev/null || true
+  echo "已禁用 bullseye-backports 仓库"
+fi
+
 # 安装依赖项
 echo "正在安装系统依赖项..."
 apt update
@@ -131,7 +143,6 @@ function patch_mingda_filament_hub_service_update() {
 
   for conf in ${moonraker_asvc}; do
     if ! grep -Eq "^mingda_filament_hub\s*$" "${conf}"; then
-      [[ $(tail -c1 "${conf}" | wc -l) -eq 0 ]] && echo "" >> "${conf}"
 
       /bin/sh -c "cat >> ${conf}" << MOONRAKER_ASVC
 mingda_filament_hub
