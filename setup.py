@@ -9,7 +9,8 @@ with open('README.md', 'r', encoding='utf-8') as f:
 
 setup(
     name="feeder_cabinet",
-    version="1.0.0",
+    # lancaigang261103215640 任务#590: hub发布版本升级为1.0.6。
+    version="1.0.6",
     author="Mingda",
     author_email="your-email@example.com",
     description="自动续料系统 - 3D打印机自动送料解决方案",

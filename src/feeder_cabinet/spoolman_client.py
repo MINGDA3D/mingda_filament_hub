@@ -23,15 +23,21 @@ logger = logging.getLogger(__name__)
 class SpoolmanClient:
     """Spoolman API客户端"""
     
-    def __init__(self, base_url: str):
+    def __init__(
+        self,
+        base_url: str,
+        moonraker_url: str = "http://localhost:7125",
+    ):
         """
         初始化Spoolman客户端
         
         Args:
             base_url: Spoolman API基础URL (例如: http://localhost:7912)
+            moonraker_url: Moonraker API基础URL
         """
         self.base_url = base_url.rstrip('/')
         self.api_url = f"{self.base_url}/api/v1"
+        self.moonraker_url = moonraker_url.rstrip('/')
         self.session: Optional[aiohttp.ClientSession] = None
         
     async def __aenter__(self):
@@ -67,6 +73,23 @@ class SpoolmanClient:
                 return await response.json()
         except aiohttp.ClientError as e:
             logger.error(f"Spoolman API请求失败: {method} {url}, 错误: {e}")
+            raise
+
+    async def _request_moonraker(
+        self, method: str, endpoint: str, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """调用Moonraker定制端点，由rfid_spoolman完成完整同步。"""
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+        url = f"{self.moonraker_url}{endpoint}"
+        try:
+            async with self.session.request(
+                method, url, json=payload
+            ) as response:
+                response.raise_for_status()
+                return await response.json()
+        except aiohttp.ClientError as e:
+            logger.error(f"Moonraker RFID同步请求失败: {method} {url}, 错误: {e}")
             raise
             
     async def get_vendors(self) -> List[Dict]:
@@ -176,58 +199,69 @@ class SpoolmanClient:
             
         return await self._request('POST', 'spool', json=data)
         
-    async def sync_rfid_to_spoolman(self, rfid_data: OpenTagFilamentData) -> Dict:
-        """
-        将RFID数据同步到Spoolman
-        
-        Args:
-            rfid_data: RFID解析的耗材数据
-            
-        Returns:
-            包含vendor_id, filament_id, spool_id的字典
-        """
+    async def sync_rfid_to_spoolman(
+        self,
+        rfid_data: OpenTagFilamentData,
+        *,
+        extruder_id: int,
+    ) -> Dict:
+        """将OpenTag原始字段及挤出机通道交给Moonraker完整同步。"""
+        if extruder_id not in (0, 1):
+            raise ValueError(f"extruder_id必须为0或1: {extruder_id}")
+        serial_number = rfid_data.serial_number.strip()
+        if not serial_number:
+            raise ValueError("OpenTag serial_number为空，拒绝创建无UID料盘")
+
+        remaining_weight = rfid_data.filament_weight_measured
+        if remaining_weight is None or remaining_weight == 0xFFFF:
+            remaining_weight = rfid_data.weight_nominal
+        color = rfid_data.color_name
+        if not color and rfid_data.color_hex is not None:
+            color = f"{rfid_data.color_hex:06X}"
+        production_date = 0
+        if rfid_data.manufacture_date is not None:
+            production_date = int(rfid_data.manufacture_date.timestamp())
+
+        # lancaigang261030173653 任务#574: 原始直径/密度交由Moonraker统一换算并保留云端推送
+        tag_info = {
+            "uid": serial_number,
+            "version": rfid_data.tag_version,
+            "manufacturer": rfid_data.manufacturer,
+            "material": rfid_data.material_name,
+            "color": color,
+            "diameter": rfid_data.diameter_target,
+            "initial_weight": rfid_data.weight_nominal,
+            "remaining_weight": remaining_weight,
+            "spool_weight": rfid_data.empty_spool_weight or 0,
+            "nozzle_temp": rfid_data.print_temp,
+            "bed_temp": rfid_data.bed_temp,
+            "density": rfid_data.density,
+            "serialNumber": serial_number,
+            "production_date": production_date,
+        }
         try:
-            # 1. 获取或创建供应商
-            vendor = await self.get_or_create_vendor(rfid_data.manufacturer)
-            vendor_id = vendor['id']
-            
-            # 2. 查找或创建耗材类型
-            filaments = await self.get_filaments(vendor_id)
-            filament = None
-            
-            # 查找匹配的耗材
-            for f in filaments:
-                if (f.get('material') == rfid_data.material_name and 
-                    f.get('name', '').find(rfid_data.color_name) != -1):
-                    filament = f
-                    logger.info(f"找到现有耗材: {f['name']} (ID: {f['id']})")
-                    break
-                    
-            if not filament:
-                logger.info(f"创建新耗材: {rfid_data.material_name} - {rfid_data.color_name}")
-                filament = await self.create_filament(rfid_data, vendor_id)
-                
-            filament_id = filament['id']
-            
-            # 3. 创建卷轴
-            logger.info(f"创建新卷轴，序列号: {rfid_data.serial_number}")
-            spool = await self.create_spool(rfid_data, filament_id)
-            spool_id = spool['id']
-            
-            logger.info(f"成功同步到Spoolman: 供应商ID={vendor_id}, 耗材ID={filament_id}, 卷轴ID={spool_id}")
-            
-            return {
-                'vendor_id': vendor_id,
-                'filament_id': filament_id,
-                'spool_id': spool_id,
-                'vendor_name': vendor['name'],
-                'filament_name': filament['name'],
-                'serial_number': rfid_data.serial_number
-            }
-            
+            response = await self._request_moonraker(
+                "POST",
+                "/server/rfid_spoolman/tag",
+                {"channel": extruder_id, "tag_info": tag_info},
+            )
+            result = response.get("result", response)
+            logger.info(
+                "Moonraker完整同步成功: 通道=%s, 卷轴ID=%s",
+                extruder_id,
+                result.get("spool_id"),
+            )
+            return result
         except Exception as e:
             logger.error(f"同步到Spoolman失败: {e}", exc_info=True)
             raise
+
+    async def sync_slot_snapshot(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """lancaigang261030233801 任务#575: 只写展示端点，不进入tag建档/激活/云端链。"""
+        response = await self._request_moonraker(
+            "POST", "/server/rfid_spoolman/slots", payload
+        )
+        return response.get("result", response)
             
     async def get_spool(self, spool_id: int) -> Dict:
         """获取卷轴信息"""
@@ -278,7 +312,9 @@ if __name__ == "__main__":
         # 测试同步
         async with SpoolmanClient("http://localhost:7912") as client:
             try:
-                result = await client.sync_rfid_to_spoolman(test_data)
+                result = await client.sync_rfid_to_spoolman(
+                    test_data, extruder_id=0
+                )
                 print(f"同步成功: {result}")
             except Exception as e:
                 print(f"同步失败: {e}")

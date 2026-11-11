@@ -9,8 +9,10 @@ Klipper监控模块 - 管理与Klipper的通信 (Asyncio Version)
 """
 
 import logging
+import time
 import asyncio
 import json
+import math
 import aiohttp
 import websockets
 from typing import Optional, Dict, Any, List, Callable, Coroutine
@@ -43,6 +45,16 @@ class KlipperMonitor:
         self.connection_lock = asyncio.Lock()
         self.ws_task: Optional[asyncio.Task] = None
         self.send_lock = asyncio.Lock()  # 新增：用于保护WebSocket发送操作
+
+        # lancaigang261017 任务#447: G-code回执与PAUSE生效确认机制。
+        # 背景(2026-10-17 09:40-09:57 事故): Klipper 阻塞在 START_PRINT 的 M191/M109 等温流程时,
+        # moonraker 的 gcode/script 请求会积压十几分钟; 旧 _send_gcode 是"发完即返回 True",
+        # 上层误判"已暂停"继续下发 UNLOAD, 14 分钟内堆了 4 条 PAUSE + 3 条 UNLOAD, 等温结束
+        # 队列集中放行, 打印在 T1 换头后被第一条迟到 PAUSE 打断, extrude 反复进退。
+        # 现在: 用 jsonrpc id 等回执 + 超时判失败; pause_resume.is_paused 作为"真暂停"唯一判据。
+        self.gcode_ack_timeout = 15.0            # 默认回执等待上限(秒)
+        self.pause_resume_is_paused = False      # 来自 pause_resume 订阅的真实暂停态
+        self._pending_gcode_waiters: Dict[int, asyncio.Future] = {}
         
         # 定时查询相关
         self.periodic_query_task: Optional[asyncio.Task] = None
@@ -55,7 +67,15 @@ class KlipperMonitor:
         self.toolhead_info = {}
         self.extruder_info = {}
         self.extruder1_info = {}
+        # lancaigang261024113000 任务#554-copy108：COPY/MIRROR双头参与不能由单值toolhead推断。
+        self.dual_carriage_info = {}
         self.motion_report = {}  # 新增：运动报告状态
+        # lancaigang261024160000 任务#554-copy108-hotfix8: paused 下 motion_report 的
+        # live_extruder_velocity 保留最后一次真实运动的速度不归零(108 实测 -0.339mm/s 正是
+        # 上一次真退料速度), 单看速度会把"早已停住的退料"当"正在退料", 永久卡住恢复。
+        # 运动队列是否真的在执行(toolhead.print_time 推进)才是"在动"的硬证据。
+        self._last_print_time = None
+        self._motion_alive_ts = None
         self.filament_sensors_status: Dict[str, bool] = {}
         self.active_extruder = 0
 
@@ -93,6 +113,8 @@ class KlipperMonitor:
 
     async def _cleanup_old_connection(self):
         """清理旧的连接和任务"""
+        # lancaigang261030211000 Qoder: 重连清理由新任务接管，禁止取消或等待当前任务。
+        current_task = asyncio.current_task()
         # 停止定时查询任务
         if self.periodic_query_task and not self.periodic_query_task.done():
             self.periodic_query_task.cancel()
@@ -103,7 +125,8 @@ class KlipperMonitor:
             self.periodic_query_task = None
         
         # 停止WebSocket处理任务
-        if self.ws_task and not self.ws_task.done():
+        if (self.ws_task and self.ws_task is not current_task
+                and not self.ws_task.done()):
             self.ws_task.cancel()
             try:
                 await self.ws_task
@@ -112,7 +135,8 @@ class KlipperMonitor:
             self.ws_task = None
         
         # 停止重连任务
-        if self.reconnect_task and not self.reconnect_task.done():
+        if (self.reconnect_task and self.reconnect_task is not current_task
+                and not self.reconnect_task.done()):
             self.reconnect_task.cancel()
             try:
                 await self.reconnect_task
@@ -129,6 +153,10 @@ class KlipperMonitor:
             self.ws = None
         
         self.ws_connected = False
+        self.dual_carriage_info.clear()
+        self.extruder_info.clear()
+        self.extruder1_info.clear()
+        self.pause_resume_is_paused = False
 
     async def connect(self) -> bool:
         """连接到Klipper/Moonraker"""
@@ -195,9 +223,15 @@ class KlipperMonitor:
                 self.logger.error(f"WebSocket处理循环中发生未知错误: {e}", exc_info=True)
 
             self.ws_connected = False
+            # lancaigang261017 任务#447: 先兑现所有在途G-code回执等待, 再清状态缓存。
+            self._abort_pending_gcode_waiters("WebSocket连接断开")
             
             # 清除状态缓存，确保重连后能正确同步状态
             self.printer_state = "unknown"
+            self.dual_carriage_info.clear()
+            self.extruder_info.clear()
+            self.extruder1_info.clear()
+            self.pause_resume_is_paused = False
             self.logger.info("WebSocket断开，已清除打印机状态缓存")
             
             # 通知断开回调
@@ -228,6 +262,8 @@ class KlipperMonitor:
                 self.logger.info(f"将在 {self.reconnect_interval} 秒后尝试重连...")
                 await asyncio.sleep(self.reconnect_interval)
                 await self.connect()
+                # connect() 已创建新读取任务，旧任务退出以避免并发 recv。
+                break
         self.logger.info("WebSocket处理任务已结束")
     
     async def _reconnect_loop(self):
@@ -262,6 +298,14 @@ class KlipperMonitor:
             # 调试日志：记录收到的原始WebSocket消息
             self.logger.debug(f"收到WebSocket消息: {json.dumps(data, ensure_ascii=False)[:500]}...")  # 限制长度避免日志过大
             
+            # lancaigang261017 任务#447: jsonrpc 回执分发——唤醒 _send_gcode 中等待的 waiter。
+            # 必须在业务分支之前处理, 否则 gcode/script 的 result 会被当作订阅响应丢弃。
+            _rid = data.get('id')
+            if _rid is not None:
+                _waiter = self._pending_gcode_waiters.pop(_rid, None)
+                if _waiter is not None and not _waiter.done():
+                    _waiter.set_result(data)
+
             if 'method' in data and data['method'] == 'notify_status_update':
                 status_data = data['params'][0]
                 self.logger.debug(f"收到状态更新通知，包含的对象: {list(status_data.keys())}")
@@ -306,6 +350,18 @@ class KlipperMonitor:
                 # 移除直接发送CAN消息的代码，避免在CAN断开时导致异常
                 # 状态通知应该由main.py的_handle_klipper_status_update处理
         
+        # lancaigang261017 任务#447: pause_resume 订阅解析。
+        # 这是判断"PAUSE 是否真正生效"的唯一可靠依据——printer_state 变 paused 有延迟,
+        # 而 _send_gcode 的受理回执不代表已执行(Klipper 队列可能积压)。
+        if 'pause_resume' in status and isinstance(status['pause_resume'], dict):
+            _paused = status['pause_resume'].get('is_paused')
+            if _paused is not None and bool(_paused) != self.pause_resume_is_paused:
+                self.pause_resume_is_paused = bool(_paused)
+                self.logger.info(f"pause_resume.is_paused 变化: {self.pause_resume_is_paused}")
+
+        if isinstance(status.get('dual_carriage'), dict):
+            self.dual_carriage_info.update(status['dual_carriage'])
+
         if 'toolhead' in status:
             self.logger.debug(f"toolhead更新: {status['toolhead']}")
             self.toolhead_info.update(status['toolhead'])
@@ -335,6 +391,19 @@ class KlipperMonitor:
     def _handle_extruder_motion_update(self, motion_data: Dict[str, Any]):
         """处理挤出机运动状态更新"""
         extruder_velocity = motion_data.get('live_extruder_velocity', 0.0)
+        # lancaigang261012 任务#411: 记录运动新鲜度(恢复闸门G2"挤出机正在退料"判据数据源)
+        # lancaigang261024160000 任务#554-copy108-hotfix8: 帧到达 != 在动。paused 下 Moonraker
+        # 仍每帧推送 motion_report(速度是残值), 原实现每帧刷新 _last_motion_ts, 新鲜度永远成立。
+        # 改为只有 toolhead.print_time 真正推进(运动队列在执行)才刷新 _motion_alive_ts。
+        self._last_motion_ts = time.monotonic()
+        self._last_motion_velocity = extruder_velocity
+        _pt = self.toolhead_info.get('print_time')
+        if isinstance(_pt, (int, float)):
+            if self._last_print_time is None:
+                self._motion_alive_ts = time.monotonic()
+            elif _pt > self._last_print_time + 1e-4:
+                self._motion_alive_ts = time.monotonic()
+            self._last_print_time = _pt
         live_position = motion_data.get('live_position', [])
         
         # 获取当前激活的挤出头
@@ -383,6 +452,16 @@ class KlipperMonitor:
                 if is_active and motion_state != "停止":
                     self.logger.debug(f"激活挤出头 {extruder_name} 运动详情: {motion_state}, 速度={extruder_velocity:.2f} mm/s")
     
+    async def refresh_status(self) -> bool:
+        """lancaigang261017: 主动拉取一次全量对象状态(启动/重连/部署重启后对齐用)。
+
+        connect() 里的 query 是异步发帧, 返回时未必已收到响应; 启动同步需可重试的显式刷新。
+        """
+        if not self.ws_connected:
+            return False
+        await self._query_current_status()
+        return True
+
     async def _query_current_status(self):
         """主动查询当前打印机状态"""
         if not self.ws_connected:
@@ -400,7 +479,11 @@ class KlipperMonitor:
                         "toolhead": None,
                         "motion_report": None,  # 新增：查询运动报告
                         "extruder": None,
-                        "extruder1": None
+                        "extruder1": None,
+                        "dual_carriage": None,
+                        # lancaigang261017 任务#447: 断线重连后必须同步真实暂停态,
+                        # 否则 pause_resume_is_paused 会残留 False 导致编排误判“未暂停”。
+                        "pause_resume": None
                     }
                 },
                 "id": self._get_next_request_id()
@@ -432,7 +515,9 @@ class KlipperMonitor:
                                 "toolhead": None,
                                 "motion_report": None,  # 新增：查询运动报告
                                 "extruder": None,
-                                "extruder1": None
+                                "extruder1": None,
+                                "dual_carriage": None,
+                                "pause_resume": None
                             }
                         },
                         "id": self._get_next_request_id()
@@ -476,10 +561,12 @@ class KlipperMonitor:
         try:
             objects_dict = {
                 "print_stats": None, 
-                "toolhead": ["extruder", "position"],
+                # hotfix8: print_time 是"运动队列是否在执行"的硬证据, 必须订阅
+                "toolhead": ["extruder", "position", "print_time"],
                 "motion_report": ["live_extruder_velocity", "live_position"],  # 新增：运动报告订阅
-                "extruder": ["can_extrude", "temperature", "target"],
-                "extruder1": ["can_extrude", "temperature", "target"],
+                "extruder": ["can_extrude", "temperature", "target", "motion_queue"],
+                "extruder1": ["can_extrude", "temperature", "target", "motion_queue"],
+                "dual_carriage": None,
                 "virtual_sdcard": None, 
                 "pause_resume": None,
             }
@@ -511,27 +598,112 @@ class KlipperMonitor:
         self.next_request_id += 1
         return self.next_request_id
     
-    async def _send_gcode(self, command: str) -> bool:
-        """发送G-code命令到Klipper"""
+    async def _send_gcode(self, command: str, timeout: Optional[float] = None) -> bool:
+        """发送G-code命令到Klipper, 并等待执行回执。
+
+        lancaigang261017 任务#447: 旧实现发完即返回 True, 无法区分"已执行"与"堆在队列里",
+        上层据此判定"打印已暂停"继续下发 UNLOAD 造成 261017 事故。现改为按 jsonrpc id 等回执,
+        超时即判失败(命令可能仍在队列中迟到生效, 调用方需自行做在途守卫)。
+        """
         if not self.ws_connected:
             self.logger.error("WebSocket未连接，无法发送G-code")
             return False
+        _timeout = self.gcode_ack_timeout if timeout is None else timeout
+        req_id = self._get_next_request_id()
+        waiter = asyncio.get_running_loop().create_future()
+        self._pending_gcode_waiters[req_id] = waiter
         try:
             gcode_request = {
                 "jsonrpc": "2.0", "method": "printer.gcode.script",
                 "params": {"script": command},
-                "id": self._get_next_request_id()
+                "id": req_id
             }
             async with self.send_lock:
                 await self.ws.send(json.dumps(gcode_request))
+            try:
+                resp = await asyncio.wait_for(waiter, timeout=_timeout)
+            except asyncio.TimeoutError:
+                self._pending_gcode_waiters.pop(req_id, None)
+                self.logger.error(f"G-code回执超时({_timeout:.0f}s), Klipper可能被阻塞在长命令队列中, "
+                                  f"命令仍可能在队列里迟到生效: {command}")
+                return False
+            if isinstance(resp, dict) and 'error' in resp:
+                self.logger.error(f"G-code被Klipper拒绝: {command}, error={resp.get('error')}")
+                return False
             self.logger.info(f"成功发送G-code: {command}")
             return True
         except websockets.exceptions.ConnectionClosed:
+            self._pending_gcode_waiters.pop(req_id, None)
             self.logger.error(f"发送G-code时连接已关闭: {command}")
             return False
         except Exception as e:
+            self._pending_gcode_waiters.pop(req_id, None)
             self.logger.error(f"发送G-code时发生错误: {str(e)}")
             return False
+
+    def _abort_pending_gcode_waiters(self, reason: str):
+        """lancaigang261017 任务#447: 连接中断时立即唤醒所有等回执的调用方, 避免白等到超时。
+
+        旧实现在断线时无人兑现 Future, 调用方要等满 10s/60s 才知道失败; 断线恢复后
+        队列状态已变, 拖延等待只会让上层晚一步中止编排。
+        """
+        if not self._pending_gcode_waiters:
+            return
+        self.logger.warning(f"连接已中断, 立即结束 {len(self._pending_gcode_waiters)} 个G-code回执等待: {reason}")
+        for _rid, _waiter in list(self._pending_gcode_waiters.items()):
+            if not _waiter.done():
+                _waiter.set_result({"error": {"message": reason}})
+        self._pending_gcode_waiters.clear()
+
+    async def probe_gcode_queue(self, timeout: float = 5.0) -> bool:
+        """lancaigang261017 任务#447: 探测 Klipper gcode 队列是否畅通(下发 PAUSE 前的预检)。
+
+        用 M400 作探测: 队列畅通时它只是等当前已排队的移动跑完, 正常打印下秒级返回;
+        队列被 M191/M109 升温、QUAD_GANTRY_LEVEL 调平、长宏等阻塞时, 请求会排在后面直到超时。
+        超时即说明此刻下发 PAUSE 只会变成"迟到命令", 调用方应该放弃本次下发。
+        M400 本身无副作用(不改变位置/温度/状态), 迟到执行也无害。
+        """
+        if not self.ws_connected:
+            return False
+        req_id = self._get_next_request_id()
+        waiter = asyncio.get_running_loop().create_future()
+        self._pending_gcode_waiters[req_id] = waiter
+        try:
+            async with self.send_lock:
+                await self.ws.send(json.dumps({
+                    "jsonrpc": "2.0", "method": "printer.gcode.script",
+                    "params": {"script": "M400"}, "id": req_id
+                }))
+            try:
+                resp = await asyncio.wait_for(waiter, timeout=timeout)
+            except asyncio.TimeoutError:
+                self._pending_gcode_waiters.pop(req_id, None)
+                self.logger.warning(f"gcode队列探测超时({timeout:.0f}s): Klipper疑似阻塞在升温/调平/长命令, "
+                                    f"本次不下发PAUSE(避免迟到生效打断打印)")
+                return False
+            if isinstance(resp, dict) and 'error' in resp:
+                self.logger.warning(f"gcode队列探测被拒绝: {resp.get('error')}")
+                return False
+            self.logger.info("gcode队列探测通过(M400已返回, 队列畅通)")
+            return True
+        except Exception as e:
+            self._pending_gcode_waiters.pop(req_id, None)
+            self.logger.error(f"gcode队列探测失败: {e}")
+            return False
+
+    async def wait_paused(self, timeout: float = 5.0) -> bool:
+        """lancaigang261017 任务#447: 轮询等待 pause_resume.is_paused 真正变为 True。
+
+        _send_gcode 返回 True 只代表 Klipper 受理了请求; 队列积压时脚本可能十几分钟后才执行,
+        因此"是否已暂停"必须以 pause_resume.is_paused 为准, 不能以受理回执为准。
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if self.pause_resume_is_paused:
+                return True
+            await asyncio.sleep(0.2)
+        return self.pause_resume_is_paused
     
     def start_monitoring(self, interval: float = 5.0):
         """开始监控打印机状态，启动定时查询任务"""
@@ -584,6 +756,9 @@ class KlipperMonitor:
             self.ws_task.cancel()
             await asyncio.gather(self.ws_task, return_exceptions=True)
             
+        # lancaigang261017 任务#447: 主动断开同样要结束在途回执等待
+        self._abort_pending_gcode_waiters("主动断开Klipper连接")
+
         # 关闭WebSocket连接
         if self.ws:
             try:
@@ -606,7 +781,13 @@ class KlipperMonitor:
         return await self._send_gcode(self.resume_cmd)
     
     async def pause_print(self):
-        return await self._send_gcode(self.pause_cmd)
+        # lancaigang261017 任务#447b: PAUSE 回执超时从 10s 放宽到 30s。
+        # 实测(261017 10:55): PAUSE 宏 = PLAY_WARN_SOUND + M400 + PAUSE_BASE + 停车 + 抬Z + 状态灯,
+        # pause_resume.is_paused 在宏中段就已翻 True, 但 jsonrpc 应答要等整个宏跑完(实测>10s)。
+        # 10s 超时会把"已暂停"误报成"未被受理", 上层据此中止换料 -> 打印机停在 PAUSED、后续0x1D
+        # 因"不在打印状态"被整条丢弃, 低重自动续料卡死等人工(261017 10:55 事故)。
+        # 队列是否阻塞由上层 probe_gcode_queue(M400) 前置探测, 本超时只需覆盖宏自身执行时长。
+        return await self._send_gcode(self.pause_cmd, timeout=30.0)
     
     async def cancel_print(self):
         return await self._send_gcode(self.cancel_cmd)
@@ -623,8 +804,50 @@ class KlipperMonitor:
         """注册断开连接回调"""
         self.disconnect_callback = callback
             
-    async def execute_gcode(self, command: str) -> bool:
-        return await self._send_gcode(command)
+    async def execute_gcode(self, command: str, timeout: Optional[float] = None) -> bool:
+        # lancaigang261017 任务#447: 宏命令(UNLOAD_FILAMENT≈13s)与 M400(等移动完成)耗时较长,
+        # 默认放宽到 60s; 调用方可用 timeout 显式覆盖。
+        return await self._send_gcode(command, timeout=timeout if timeout is not None else 60.0)
+
+    async def fetch_gcode_store(self, count: int = 40) -> Optional[list]:
+        """lancaigang261024143000 任务#554-copy108-hotfix4: 读取 Moonraker 最近 gcode 输出。
+
+        _send_gcode 的 jsonrpc 回执只代表请求被受理, Klipper 运行期报错(挤出行程超限/
+        越界/低温)不会体现为 error。上层用它复核"预挤命令真的被执行"。
+        传输异常返回 None(不可取证), 由调用方决定是否锁死; 当前选择不因此反向锁打印。
+        """
+        try:
+            url = "%s/server/gcode_store?count=%d" % (self.moonraker_url, max(1, int(count)))
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as response:
+                    if response.status != 200:
+                        self.logger.warning("读取G-code输出失败: HTTP %s", response.status)
+                        return None
+                    data = await response.json()
+            return ((data.get('result') or {}).get('gcode_store')) or []
+        except Exception as e:
+            self.logger.warning("读取G-code输出异常: %s", e)
+            return None
+
+    async def get_gcode_e_position(self) -> Optional[float]:
+        """读取Klipper实际G-code E坐标，供暂停期挤出行程复核。"""
+        try:
+            url = "%s/printer/objects/query?gcode_move" % self.moonraker_url
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as response:
+                    if response.status != 200:
+                        self.logger.warning("读取E坐标失败: HTTP %s", response.status)
+                        return None
+                    data = await response.json()
+            position = (data.get('result', {}).get('status', {})
+                        .get('gcode_move', {}).get('gcode_position', []))
+            if len(position) < 4:
+                return None
+            value = float(position[3])
+            return value if math.isfinite(value) else None
+        except Exception as e:
+            self.logger.warning("读取E坐标异常: %s", e)
+            return None
 
     async def check_gcode_macro_exists(self, macro_name: str) -> bool:
         """
@@ -671,7 +894,9 @@ class KlipperMonitor:
             'extruder': self.extruder_info,
             'extruder1': self.extruder1_info,
             'active_extruder': self.active_extruder,
-            'filament_sensors_status': self.filament_sensors_status
+            'filament_sensors_status': self.filament_sensors_status,
+            # lancaigang261017 任务#447: 真实暂停态(来自 pause_resume 订阅), 供上层编排判据
+            'is_paused': self.pause_resume_is_paused
         }
 
     def get_filament_status(self) -> Dict[str, bool]:

@@ -5,10 +5,11 @@
 实现了自动检测断料、请求送料、恢复打印的完整流程。
 
 开发者: Mingda
-版本: 1.0.0
+版本: 1.0.6
 """
 
-__version__ = "1.0.0"
+# lancaigang261103215640 任务#590: hub发布版本升级为1.0.6。
+__version__ = "1.0.6"
 
 # 导出主要的类和函数
 from .main import FeederCabinetApp, main

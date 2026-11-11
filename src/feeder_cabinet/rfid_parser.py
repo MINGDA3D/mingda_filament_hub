@@ -71,7 +71,7 @@ class RFIDTransferSession:
     filament_id: int
     total_packets: int
     data_length: int
-    data_source: int  # 0=RFID读取, 1=手动输入
+    data_source: int  # 0=RFID读取, 1=手动输入, 2=查询响应, 3=周期槽位展示
     received_packets: Dict[int, bytes] = field(default_factory=dict)
     start_time: float = 0
     complete: bool = False
@@ -141,7 +141,8 @@ class RFIDDataParser:
             'type': 'rfid_start',
             'extruder_id': extruder_id,
             'filament_id': filament_id,
-            'data_source': 'rfid' if data_source == 0 else 'manual'
+            'data_source': {0: 'rfid', 1: 'manual', 2: 'response', 3: 'slot_snapshot'}.get(
+                data_source, f'unknown({data_source})')
         }
         
     def _handle_response_start(self, data: bytes) -> Dict:
@@ -222,7 +223,9 @@ class RFIDDataParser:
         # 解析OpenTag数据
         try:
             filament_data = self._parse_opentag_data(raw_data)
-            self.completed_data[session.extruder_id] = filament_data
+            # lancaigang261030233801 任务#575: 周期展示数据不得覆盖自然RFID完成缓存
+            if session.data_source != 3:
+                self.completed_data[session.extruder_id] = filament_data
             
             logger.info(f"成功接收RFID数据: 挤出机{session.extruder_id}, "
                        f"材料: {filament_data.material_name}, "
@@ -235,6 +238,7 @@ class RFIDDataParser:
                 'type': 'rfid_complete',
                 'extruder_id': session.extruder_id,
                 'filament_id': session.filament_id,
+                'data_source': session.data_source,
                 'data': filament_data
             }
             
